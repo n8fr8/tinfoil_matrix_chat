@@ -1,0 +1,66 @@
+# Tinfoil Container configuration for the Melong Matrix chatbot.
+# Full reference: https://docs.tinfoil.sh/containers/configuration
+#
+# This file is PUBLIC and measured into the enclave attestation. Never put
+# secret values here; they go in the Tinfoil dashboard under Secrets.
+#
+# Before the first release, replace OWNER/REPO below with this repo's GitHub
+# path (e.g. ghcr.io/my-org/melong_matrix). The "Tinfoil Release" workflow
+# builds the image and rewrites the @sha256 digest on every release.
+
+cvm-version: 0.14.12
+cpus: 2
+memory: 8192
+
+networks:
+  # Outbound access is blocked by default. Allow only what the bot needs.
+  egress:
+    egress: allowlist
+    allow:
+      - wick.keanu.im             # Matrix homeserver (must match MATRIX_HOMESERVER_URL)
+      - inference.tinfoil.sh      # Tinfoil inference API
+      - atc.tinfoil.sh            # Tinfoil attestation verification
+      - github-proxy.tinfoil.sh   # attestation fallbacks used by the Tinfoil SDK
+      - kds-proxy.tinfoil.sh
+
+containers:
+  - name: "melong-bot"
+    image: "ghcr.io/n8fr8/tinfoil_matrix_chat:placeholder"
+    restart: always
+    networks: [egress]
+    # Root filesystem is read-only; runtime state goes in memory and is wiped on
+    # restart. Each start therefore logs in with the password as a new Matrix
+    # device and removes the previous one (MATRIX_CLEANUP_OLD_DEVICES).
+    tmpfs:
+      /app/data: "size=256m"
+      /tmp: "size=64m"
+    env:
+      - MATRIX_HOMESERVER_URL: "https://wick.keanu.im"
+      - MATRIX_CLEANUP_OLD_DEVICES: "true"
+      - MATRIX_DEVICE_NAME: "melong-bot"
+      - MATRIX_ENCRYPTION: "true"
+      - MATRIX_AUTOJOIN: "true"
+      - MATRIX_LOG_LEVEL: "INFO"
+      - TINFOIL_MODEL: "gemma4-31b"
+      - TINFOIL_TTS_MODEL: "voxtral-tts"
+      - TINFOIL_TTS_VOICE: "neutral_female"
+      - HEALTH_PORT: "8080"
+      # Values for these bare names are set per instance when deploying.
+      - MATRIX_USERNAME
+      - MATRIX_DISPLAY_NAME
+      - MATRIX_COMMAND_PREFIX
+    secrets:
+      - TINFOIL_API_KEY
+      - MATRIX_PASSWORD
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 2m
+
+# Public HTTPS entry point: serves the bot's status JSON (no sensitive data).
+shim:
+  upstream-port: 8080
+  paths:
+    - /*
