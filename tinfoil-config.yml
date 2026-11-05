@@ -25,7 +25,7 @@ networks:
 
 containers:
   - name: "melong-bot"
-    image: "ghcr.io/n8fr8/tinfoil_matrix_chat:placeholder"
+    image: "ghcr.io/n8fr8/tinfoil_matrix_chat@sha256:d45ef188891982763233dda84c8b687f00a11cca60e625cfcbb2679d577a7f07" # v0.1.0
     restart: always
     networks: [egress]
     # Root filesystem is read-only; runtime state goes in memory and is wiped on
