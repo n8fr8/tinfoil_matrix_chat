@@ -17,6 +17,15 @@ import { loadConfig } from "./config.js";
 import { resolveCredentials } from "./auth.js";
 import { ChatClient } from "./melong.js";
 import { markdownToMatrixHtml } from "./format.js";
+import {
+    MEDIA_MSGTYPES,
+    useAuthenticatedMedia,
+    attachmentCaption,
+    attachmentFilename,
+    downloadAttachment,
+    toVoiceMessage,
+    uploadForRoom,
+} from "./media.js";
 
 async function main() {
     const config = loadConfig();
@@ -51,6 +60,7 @@ async function main() {
 
     const client = new MatrixClient(config.homeserverUrl, creds.accessToken, storage, cryptoStore);
     stripNullKeyUploadFields(client);
+    useAuthenticatedMedia(client);
     if (config.autojoin) setupAutojoin(client);
 
     const chat = new ChatClient(config.chat);
@@ -122,22 +132,35 @@ function stripNullKeyUploadFields(client) {
     };
 }
 
+// Some clients send a placeholder text like "Sent 1 media items." alongside
+// (or as the fallback body of) media. It is not a real message, so skip it.
+const MEDIA_PLACEHOLDER = /^sent \d+ (media )?items?\.?$/i;
+
+// Strips the command prefix. Returns null when a prefix is set and missing.
+function stripPrefix(config, text) {
+    if (!config.commandPrefix) return text;
+    if (!text.startsWith(config.commandPrefix)) return null;
+    return text.slice(config.commandPrefix.length).trim();
+}
+
 async function handleMessage(client, chat, config, botUserId, roomId, event) {
     const content = event?.content;
-    if (!content || content.msgtype !== "m.text") return; // only plain text
-    if (event.sender === botUserId) return; // ignore our own messages
+    if (!content || event.sender === botUserId) return; // ignore our own messages
+    LogService.debug("melong", `Message ${event.event_id} msgtype=${content.msgtype} keys=${Object.keys(content).join(",")}`);
+
+    const media = mediaItems(content);
+    if (media.length) return handleAttachments(client, chat, config, roomId, event, media);
+    if (content.msgtype !== "m.text") return;
 
     let body = (content.body || "").trim();
-    if (!body) return;
+    if (!body || MEDIA_PLACEHOLDER.test(body)) return;
 
     // Optional command prefix: only react to "!ai ..." style messages when set.
-    if (config.commandPrefix) {
-        if (!body.startsWith(config.commandPrefix)) return;
-        body = body.slice(config.commandPrefix.length).trim();
-        if (!body) {
-            await client.replyNotice(roomId, event, `Usage: ${config.commandPrefix} <your message>`);
-            return;
-        }
+    body = stripPrefix(config, body);
+    if (body === null) return;
+    if (!body) {
+        await client.replyNotice(roomId, event, `Usage: ${config.commandPrefix} <your message>`);
+        return;
     }
 
     // "!reset" clears the bot's memory of this room.
@@ -147,17 +170,88 @@ async function handleMessage(client, chat, config, botUserId, roomId, event) {
         return;
     }
 
-    await client.setTyping(roomId, true, 30000).catch(() => {});
+    await respond(client, chat, roomId, event, body, []);
+}
+
+// Returns the media in a message: the message itself for m.image/m.audio/
+// m.video/m.file, or the items of a multi-media "gallery" message (clients
+// put these in an array of objects that each carry their own url/file).
+function mediaItems(content) {
+    if (MEDIA_MSGTYPES.includes(content.msgtype)) return [content];
+    for (const value of Object.values(content)) {
+        if (!Array.isArray(value)) continue;
+        const items = value.filter((v) => v && typeof v === "object" && (v.url || v.file?.url));
+        if (items.length) return items.map((v) => ({ ...v, msgtype: v.msgtype || v.itemtype }));
+    }
+    return [];
+}
+
+async function handleAttachments(client, chat, config, roomId, event, items) {
+    const tooBig = items.find((c) => c.info?.size > config.maxAttachmentBytes);
+    if (tooBig) {
+        if (!config.commandPrefix) {
+            const mb = Math.round(config.maxAttachmentBytes / 1024 / 1024);
+            await client.replyNotice(roomId, event, `Sorry, "${attachmentFilename(tooBig)}" is too large (limit ${mb} MB).`);
+        }
+        return;
+    }
+
+    // Text sent with the media is the instruction. For a gallery it is the
+    // message body; for a single file it is the caption.
+    let caption = event.content === items[0] ? attachmentCaption(items[0]) : (event.content.body || "").trim();
+    if (MEDIA_PLACEHOLDER.test(caption)) caption = "";
+    if (!caption) caption = items.map(attachmentCaption).find(Boolean) || "";
+
+    // With a command prefix set, only respond when the caption starts with it.
+    const prompt = stripPrefix(config, caption);
+    if (prompt === null) return;
+
+    // No instruction: the chat client falls back to describing / summarising.
+    await respond(client, chat, roomId, event, prompt, items);
+}
+
+async function respond(client, chat, roomId, event, text, attachmentContents) {
+    await client.setTyping(roomId, true, 60000).catch(() => {});
     try {
-        const reply = await chat.chat(roomId, body);
+        const attachments = [];
+        for (const c of attachmentContents) attachments.push(await downloadAttachment(client, c));
+        const reply = await chat.chat(roomId, text, attachments);
+        if (reply.voice) {
+            try {
+                await sendVoiceReply(client, chat, roomId, event, reply.text);
+                return;
+            } catch (err) {
+                // Fall back to a text reply if speech synthesis/upload fails.
+                LogService.error("melong", "Voice reply failed:", err?.message || err);
+            }
+        }
         // Plain Markdown stays in `body` as a fallback; clients render the HTML.
-        await client.sendMessage(roomId, RichReply.createFor(roomId, event, reply, markdownToMatrixHtml(reply)));
+        await client.sendMessage(roomId, RichReply.createFor(roomId, event, reply.text, markdownToMatrixHtml(reply.text)));
     } catch (err) {
         LogService.error("melong", "Chat request failed:", err?.message || err);
         await client.replyNotice(roomId, event, `Sorry, something went wrong: ${err?.message || err}`);
     } finally {
         await client.setTyping(roomId, false).catch(() => {});
     }
+}
+
+// Speaks `text` with Tinfoil TTS and sends it as a Matrix voice message
+// (MSC3245), with the text as a caption so it is still readable.
+async function sendVoiceReply(client, chat, roomId, event, text) {
+    await client.setTyping(roomId, true, 60000).catch(() => {});
+    const voice = await toVoiceMessage(await chat.speak(text));
+    const filename = "voice-reply.ogg";
+    const media = await uploadForRoom(client, roomId, voice.data, voice.mimetype, filename);
+    await client.sendMessage(roomId, {
+        msgtype: "m.audio",
+        body: text,
+        filename,
+        ...media,
+        info: { mimetype: voice.mimetype, size: voice.data.length, duration: voice.durationMs },
+        "org.matrix.msc1767.audio": { duration: voice.durationMs, waveform: voice.waveform },
+        "org.matrix.msc3245.voice": {},
+        "m.relates_to": { "m.in_reply_to": { event_id: event.event_id } },
+    });
 }
 
 main().catch((err) => {

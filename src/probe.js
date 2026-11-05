@@ -17,8 +17,8 @@ console.log(`Model:   ${config.model}`);
 console.log(`Message: ${JSON.stringify(sample)}\n`);
 
 try {
-    const out = await new ChatClient(config).chat("probe", sample);
-    console.log(`✓ OK ->\n${out}`);
+    const { text } = await new ChatClient(config).chat("probe", sample);
+    console.log(`✓ OK ->\n${text}`);
 } catch (err) {
     console.error(`✗ ${err.message}`);
     process.exit(1);

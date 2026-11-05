@@ -12,12 +12,15 @@ Send the bot a message and it replies. It remembers recent messages in each room
 - Auto-joins rooms when invited.
 - Reply to every message, or only `!ai …`-prefixed commands.
 - Replies are rendered as rich text (bold, lists, code blocks, tables) in Matrix clients.
+- Understands attachments: images, documents (PDF, Word, PowerPoint, Excel, CSV, text), audio and voice messages, and the soundtrack of videos. See [Attachments](#attachments).
+- Replies with a voice message when asked ("answer with a voice message", "say it out loud"). See [Voice replies](#voice-replies).
 - Remembers the last few exchanges per room (in memory; cleared on restart or with `!reset`).
 
 ## Requirements
 
 - Node.js ≥ 20.11 (uses the built-in `fetch` and `--env-file`).
 - A Tinfoil API key (`TINFOIL_API_KEY`).
+- `ffmpeg` on the PATH, for voice messages and audio/video in formats other than MP3/WAV.
 - A Matrix account for the bot.
 
 ## Setup
@@ -64,6 +67,27 @@ All settings come from environment variables (loaded from `.env`). See [`.env.ex
 | `CHAT_HISTORY_TURNS` | `10` | Past exchanges remembered per room (`0` = none). |
 | `CHAT_MAX_NEW_TOKENS` | `2048` | Reply length cap (includes reasoning tokens). |
 | `CHAT_TIMEOUT_MS` | `120000` | Request timeout. |
+| `TINFOIL_TRANSCRIPTION_MODEL` | `voxtral-small-24b` | Speech-to-text model for audio and video. |
+| `CHAT_MAX_ATTACHMENT_MB` | `25` | Larger attachments are refused. |
+| `TINFOIL_TTS_MODEL` | `voxtral-tts` | Text-to-speech model for voice replies (`qwen3-tts` is the lower-latency alternative). |
+| `TINFOIL_TTS_VOICE` | `neutral_female` | Voice name; must be one the TTS model offers (see `.env.example`). |
+
+### Attachments
+
+| You send | What happens |
+| --- | --- |
+| Image | Sent to the model (`gemma4-31b` can see images). |
+| Document (PDF, DOCX, PPTX, XLSX, CSV, text…) | Sent to Tinfoil, which converts it inside the enclave and passes it to the model. |
+| Audio / voice message | Transcribed with the speech-to-text model; the transcript goes to the model. |
+| Video | Its audio track is transcribed (frames are not analysed). |
+
+**Prompts:** any text sent with the attachment (its caption) is used as the instruction, e.g. an image captioned "translate the sign". With no text, the bot acts straight away: it describes images, summarises documents and videos, and replies to voice messages. Multi-image "gallery" messages are handled as one request. Placeholder texts some apps send with media (e.g. "Sent 1 media items.") are ignored. With `MATRIX_COMMAND_PREFIX` set, the caption must start with the prefix.
+
+Files are downloaded (and decrypted in encrypted rooms) by the bot, then sent to Tinfoil. Only a short note like "[Shared an image: photo.jpg]" is kept in conversation memory, so follow-up questions work from the model's earlier answer rather than re-sending the file. Audio transcripts are kept in full.
+
+### Voice replies
+
+Ask for a spoken answer in your own words, by text or in a voice message ("reply with a voice message", "read this aloud"). The model flags the request, writes its answer as plain spoken text, and the bot speaks it with Tinfoil text-to-speech. The answer arrives as a Matrix voice message (Ogg/Opus with a waveform), with the text as its caption. It is encrypted in encrypted rooms. If speech synthesis fails, the bot replies in text instead. Needs `ffmpeg`.
 
 ### Testing the connection
 
@@ -77,6 +101,8 @@ src/
   config.js  env loading + validation
   auth.js    token resolution (env / cache / password login)
   melong.js  chat client with per-room memory (Tinfoil SDK)
+  media.js   attachment download/decrypt + ffmpeg audio conversion
+  format.js  Markdown -> Matrix HTML for replies
   login.js   one-off: print an access token
 ```
 

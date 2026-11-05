@@ -21,6 +21,12 @@ export function loadChatConfig(env = process.env) {
         // How many past exchanges to remember per room (0 = no memory).
         historyTurns: env.CHAT_HISTORY_TURNS ? Number(env.CHAT_HISTORY_TURNS) : 10,
         timeoutMs: env.CHAT_TIMEOUT_MS ? Number(env.CHAT_TIMEOUT_MS) : 120000,
+        // Speech-to-text model used for audio attachments and voice messages.
+        transcriptionModel: env.TINFOIL_TRANSCRIPTION_MODEL || "voxtral-small-24b",
+        // Text-to-speech for voice replies. The voice must belong to the model
+        // (see .env.example for both models' voice lists).
+        ttsModel: env.TINFOIL_TTS_MODEL || "voxtral-tts",
+        ttsVoice: env.TINFOIL_TTS_VOICE || "neutral_female",
     };
 }
 
@@ -48,6 +54,10 @@ export function loadConfig() {
         commandPrefix: env.MATRIX_COMMAND_PREFIX ?? "",
         logLevel: env.MATRIX_LOG_LEVEL || "INFO",
 
+        // --- Attachments ---
+        // Files larger than this are refused (Tinfoil's document limit is 50 MB).
+        maxAttachmentBytes: (env.CHAT_MAX_ATTACHMENT_MB ? Number(env.CHAT_MAX_ATTACHMENT_MB) : 25) * 1024 * 1024,
+
         // --- Chat via Tinfoil private inference ---
         chat: loadChatConfig(env),
     };
@@ -61,6 +71,7 @@ export function loadConfig() {
     }
     if (!env.TINFOIL_API_KEY) errors.push("TINFOIL_API_KEY is required");
     if (Number.isNaN(config.chat.maxNewTokens)) errors.push("CHAT_MAX_NEW_TOKENS must be a number");
+    if (Number.isNaN(config.maxAttachmentBytes)) errors.push("CHAT_MAX_ATTACHMENT_MB must be a number");
     if (Number.isNaN(config.chat.historyTurns)) errors.push("CHAT_HISTORY_TURNS must be a number");
 
     if (errors.length) {
