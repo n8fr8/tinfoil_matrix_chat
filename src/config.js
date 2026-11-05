@@ -7,25 +7,20 @@ function bool(value, fallback) {
     return !/^(0|false|no|off)$/i.test(value.trim());
 }
 
-// Builds just the Melong endpoint config. Separated so `npm run probe` can use
-// it without requiring the Matrix credentials.
-export function loadMelongConfig(env = process.env) {
+// Builds just the chat (Tinfoil) config. Separated so `npm run probe` can use
+// it without requiring the Matrix credentials. The Tinfoil SDK reads
+// TINFOIL_API_KEY from the environment itself.
+export function loadChatConfig(env = process.env) {
     return {
-        endpointUrl: env.MELONG_ENDPOINT_URL,
-        // HF endpoints are usually token-protected; HF_TOKEN is the conventional name.
-        token: env.MELONG_API_TOKEN || env.HF_TOKEN || "",
-        maxNewTokens: env.MELONG_MAX_NEW_TOKENS ? Number(env.MELONG_MAX_NEW_TOKENS) : 256,
-        // {text} is replaced with the user's message. Mirrors the model card example.
-        promptTemplate:
-            env.MELONG_PROMPT_TEMPLATE ||
-            "Please translate the following text into Tibetan: {text} Translation: ",
-        // For "hf" mode: "messages" sends a chat array, "text" sends a raw string.
-        inputMode: env.MELONG_INPUT_MODE === "text" ? "text" : "messages",
-        // Wire protocol: "openai" (/v1/chat/completions), "hf" (root {inputs}), "tgi" (/generate).
-        apiMode: env.MELONG_API_MODE || "openai",
-        // Model name sent in "openai" mode. vLLM requires it to match the served model.
-        model: env.MELONG_MODEL || "TenzinGayche/Monlam_Melong_preview",
-        timeoutMs: env.MELONG_TIMEOUT_MS ? Number(env.MELONG_TIMEOUT_MS) : 60000,
+        // Model ID from https://docs.tinfoil.sh/models/overview
+        model: env.TINFOIL_MODEL || "gemma4-31b",
+        // Leave room for the model's thinking + the answer.
+        maxNewTokens: env.CHAT_MAX_NEW_TOKENS ? Number(env.CHAT_MAX_NEW_TOKENS) : 2048,
+        // Optional override for the bot's personality / instructions.
+        systemPrompt: env.CHAT_SYSTEM_PROMPT || "",
+        // How many past exchanges to remember per room (0 = no memory).
+        historyTurns: env.CHAT_HISTORY_TURNS ? Number(env.CHAT_HISTORY_TURNS) : 10,
+        timeoutMs: env.CHAT_TIMEOUT_MS ? Number(env.CHAT_TIMEOUT_MS) : 120000,
     };
 }
 
@@ -48,13 +43,13 @@ export function loadConfig() {
         // --- Behaviour ---
         autojoin: bool(env.MATRIX_AUTOJOIN, true),
         encryption: bool(env.MATRIX_ENCRYPTION, true),
-        // When set (e.g. "!tr"), the bot only translates messages that start with
-        // the prefix. When empty, it translates every text message in rooms it is in.
+        // When set (e.g. "!ai"), the bot only replies to messages that start with
+        // the prefix. When empty, it replies to every text message in rooms it is in.
         commandPrefix: env.MATRIX_COMMAND_PREFIX ?? "",
         logLevel: env.MATRIX_LOG_LEVEL || "INFO",
 
-        // --- Melong Hugging Face inference endpoint ---
-        melong: loadMelongConfig(env),
+        // --- Chat via Tinfoil private inference ---
+        chat: loadChatConfig(env),
     };
 
     const errors = [];
@@ -64,8 +59,9 @@ export function loadConfig() {
             "Provide MATRIX_ACCESS_TOKEN, or MATRIX_USERNAME + MATRIX_PASSWORD for password login",
         );
     }
-    if (!config.melong.endpointUrl) errors.push("MELONG_ENDPOINT_URL is required");
-    if (Number.isNaN(config.melong.maxNewTokens)) errors.push("MELONG_MAX_NEW_TOKENS must be a number");
+    if (!env.TINFOIL_API_KEY) errors.push("TINFOIL_API_KEY is required");
+    if (Number.isNaN(config.chat.maxNewTokens)) errors.push("CHAT_MAX_NEW_TOKENS must be a number");
+    if (Number.isNaN(config.chat.historyTurns)) errors.push("CHAT_HISTORY_TURNS must be a number");
 
     if (errors.length) {
         throw new Error("Invalid configuration:\n  - " + errors.join("\n  - "));

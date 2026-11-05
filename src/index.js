@@ -1,5 +1,5 @@
-// Melong Matrix bot — listens for messages in its rooms and replies with a
-// Tibetan translation produced by the Melong Hugging Face inference endpoint.
+// Matrix chatbot — listens for messages in its rooms and replies using a
+// general-purpose AI model via Tinfoil private inference.
 
 import {
     MatrixClient,
@@ -8,13 +8,15 @@ import {
     LogService,
     RichConsoleLogger,
     LogLevel,
+    RichReply,
 } from "matrix-bot-sdk";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { loadConfig } from "./config.js";
 import { resolveCredentials } from "./auth.js";
-import { MelongClient } from "./melong.js";
+import { ChatClient } from "./melong.js";
+import { markdownToMatrixHtml } from "./format.js";
 
 async function main() {
     const config = loadConfig();
@@ -48,15 +50,16 @@ async function main() {
     }
 
     const client = new MatrixClient(config.homeserverUrl, creds.accessToken, storage, cryptoStore);
+    stripNullKeyUploadFields(client);
     if (config.autojoin) setupAutojoin(client);
 
-    const melong = new MelongClient(config.melong);
+    const chat = new ChatClient(config.chat);
 
     // Cache our own user id so we can ignore our own messages without an await per event.
     const botUserId = await client.getUserId();
 
     client.on("room.message", (roomId, event) => {
-        handleMessage(client, melong, config, botUserId, roomId, event).catch((err) => {
+        handleMessage(client, chat, config, botUserId, roomId, event).catch((err) => {
             LogService.error("melong", `Failed to handle message in ${roomId}:`, err);
         });
     });
@@ -105,7 +108,21 @@ function setupAutojoin(client) {
     });
 }
 
-async function handleMessage(client, melong, config, botUserId, roomId, event) {
+// The Rust crypto engine sends `"device_keys": null` (and similar) when it only
+// has one-time keys to upload. Spec-strict homeservers reject null here
+// (M_INVALID_PARAM "device_keys must not be null"), which fails every sync.
+// Drop null top-level fields from /keys/upload bodies before they are sent.
+function stripNullKeyUploadFields(client) {
+    const doRequest = client.doRequest.bind(client);
+    client.doRequest = (method, endpoint, qs, body, ...rest) => {
+        if (method === "POST" && endpoint.endsWith("/keys/upload") && body && typeof body === "object") {
+            body = Object.fromEntries(Object.entries(body).filter(([, v]) => v !== null && v !== undefined));
+        }
+        return doRequest(method, endpoint, qs, body, ...rest);
+    };
+}
+
+async function handleMessage(client, chat, config, botUserId, roomId, event) {
     const content = event?.content;
     if (!content || content.msgtype !== "m.text") return; // only plain text
     if (event.sender === botUserId) return; // ignore our own messages
@@ -113,23 +130,31 @@ async function handleMessage(client, melong, config, botUserId, roomId, event) {
     let body = (content.body || "").trim();
     if (!body) return;
 
-    // Optional command prefix: only react to "!tr ..." style messages when set.
+    // Optional command prefix: only react to "!ai ..." style messages when set.
     if (config.commandPrefix) {
         if (!body.startsWith(config.commandPrefix)) return;
         body = body.slice(config.commandPrefix.length).trim();
         if (!body) {
-            await client.replyNotice(roomId, event, `Usage: ${config.commandPrefix} <text to translate into Tibetan>`);
+            await client.replyNotice(roomId, event, `Usage: ${config.commandPrefix} <your message>`);
             return;
         }
     }
 
+    // "!reset" clears the bot's memory of this room.
+    if (body === "!reset") {
+        chat.reset(roomId);
+        await client.replyNotice(roomId, event, "Conversation history cleared.");
+        return;
+    }
+
     await client.setTyping(roomId, true, 30000).catch(() => {});
     try {
-        const translation = await melong.translate(body);
-        await client.replyText(roomId, event, translation);
+        const reply = await chat.chat(roomId, body);
+        // Plain Markdown stays in `body` as a fallback; clients render the HTML.
+        await client.sendMessage(roomId, RichReply.createFor(roomId, event, reply, markdownToMatrixHtml(reply)));
     } catch (err) {
-        LogService.error("melong", "Translation failed:", err?.message || err);
-        await client.replyNotice(roomId, event, `Sorry, translation failed: ${err?.message || err}`);
+        LogService.error("melong", "Chat request failed:", err?.message || err);
+        await client.replyNotice(roomId, event, `Sorry, something went wrong: ${err?.message || err}`);
     } finally {
         await client.setTyping(roomId, false).catch(() => {});
     }
