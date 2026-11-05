@@ -27,6 +27,11 @@ containers:
   - name: "melong-bot"
     image: "ghcr.io/n8fr8/tinfoil_matrix_chat:placeholder"
     restart: always
+    # Run as root inside the sandbox: Tinfoil mounts the tmpfs paths below owned
+    # by root, so the image's unprivileged "node" user can't write to them. The
+    # container still has no Linux capabilities, a read-only root filesystem,
+    # and no-new-privileges.
+    user: "0:0"
     networks: [egress]
     # Root filesystem is read-only; runtime state goes in memory and is wiped on
     # restart. Each start therefore logs in with the password as a new Matrix

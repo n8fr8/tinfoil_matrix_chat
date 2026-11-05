@@ -29,29 +29,55 @@ import {
 } from "./media.js";
 
 async function main() {
-    const config = loadConfig();
     const startedAt = Date.now();
-
     LogService.setLogger(new RichConsoleLogger());
-    LogService.setLevel(LogLevel.fromString(config.logLevel));
+    LogService.setLevel(LogLevel.fromString(process.env.MATRIX_LOG_LEVEL || "INFO"));
     LogService.muteModule("Metrics");
 
     // Optional status endpoint (required by Tinfoil Containers; see src/health.js).
-    const status = { started: false, lastSyncAt: 0 };
-    if (config.healthPort) {
-        startHealthServer(config.healthPort, () => {
+    // Started before anything else so startup problems are visible on it.
+    const status = { started: false, lastSyncAt: 0, error: null };
+    const healthPort = Number(process.env.HEALTH_PORT) || 0;
+    if (healthPort) {
+        startHealthServer(healthPort, () => {
             const syncAge = status.lastSyncAt ? Date.now() - status.lastSyncAt : null;
             return {
                 ok: status.started && syncAge !== null && syncAge < 5 * 60 * 1000,
                 started: status.started,
                 secondsSinceLastSync: syncAge === null ? null : Math.round(syncAge / 1000),
                 uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
+                ...(status.error ? { error: status.error } : {}),
             };
         });
     }
 
-    // Make sure storage directories exist before the providers touch them.
+    // Retry startup with backoff. With a status endpoint the process stays up
+    // and reports the error there; without one, exit as before.
+    for (let attempt = 1, delay = 15000; ; attempt++, delay = Math.min(delay * 2, 5 * 60 * 1000)) {
+        try {
+            await startBot(status, startedAt);
+            status.error = null;
+            return;
+        } catch (err) {
+            status.error = String(err?.body?.error || err?.message || err);
+            if (!healthPort) throw err;
+            LogService.error("melong", `Startup failed (attempt ${attempt}): ${status.error}. Retrying in ${delay / 1000}s`);
+            await new Promise((r) => setTimeout(r, delay));
+        }
+    }
+}
+
+async function startBot(status, startedAt) {
+    const config = loadConfig();
+
+    // Fail early, with a clear message, if runtime storage isn't writable
+    // (e.g. a container tmpfs owned by a different user).
     await fs.mkdir(path.dirname(config.storagePath), { recursive: true });
+    await fs.access(path.dirname(config.storagePath), fs.constants.W_OK).catch(() => {
+        throw new Error(
+            `Data directory ${path.resolve(path.dirname(config.storagePath))} is not writable by uid ${process.getuid?.()}`,
+        );
+    });
 
     const creds = await resolveCredentials(config);
     LogService.info("melong", `Authenticated via ${creds.source}${creds.userId ? ` as ${creds.userId}` : ""}`);
