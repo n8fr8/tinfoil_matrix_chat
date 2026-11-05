@@ -82,7 +82,7 @@ export class ChatClient {
             );
             return (result?.text ?? "").trim();
         } catch (err) {
-            throw new Error(`Tinfoil transcription failed: ${err?.message || err}`);
+            throw new Error(`Tinfoil transcription failed: ${describeError(err)}`);
         }
     }
 
@@ -95,7 +95,7 @@ export class ChatClient {
             );
             return Buffer.from(await res.arrayBuffer());
         } catch (err) {
-            throw new Error(`Tinfoil text-to-speech failed: ${err?.message || err}`);
+            throw new Error(`Tinfoil text-to-speech failed: ${describeError(err)}`);
         }
     }
 
@@ -145,7 +145,7 @@ export class ChatClient {
                 { timeout: this.timeoutMs, signal: opts.signal },
             );
         } catch (err) {
-            throw new Error(`Tinfoil request failed: ${err?.message || err}`);
+            throw new Error(`Tinfoil request failed: ${describeError(err)}`);
         }
 
         let out = (completion?.choices?.[0]?.message?.content ?? "").toString().trim();
@@ -159,6 +159,13 @@ export class ChatClient {
         this.histories.set(conversationId, updated.slice(-this.historyTurns * 2));
         return { text: out, voice };
     }
+}
+
+// Error message plus the underlying network cause, if any.
+function describeError(err) {
+    const msg = err?.message || String(err);
+    const cause = err?.cause?.code || err?.cause?.message;
+    return cause && !msg.includes(cause) ? `${msg} (${cause})` : msg;
 }
 
 function dataUrl({ data, mimetype }) {

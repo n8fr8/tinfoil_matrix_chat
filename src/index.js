@@ -38,6 +38,14 @@ async function main() {
     // Started before anything else so startup problems are visible on it.
     const status = { started: false, lastSyncAt: 0, error: null };
     const healthPort = Number(process.env.HEALTH_PORT) || 0;
+    // Hosts checked by /diag: the homeserver and Tinfoil's API endpoints.
+    const diagHosts = () => {
+        const hosts = ["inference.tinfoil.sh", "atc.tinfoil.sh"];
+        try {
+            hosts.unshift(new URL(process.env.MATRIX_HOMESERVER_URL).hostname);
+        } catch {}
+        return hosts;
+    };
     if (healthPort) {
         startHealthServer(healthPort, () => {
             const syncAge = status.lastSyncAt ? Date.now() - status.lastSyncAt : null;
@@ -48,7 +56,7 @@ async function main() {
                 uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
                 ...(status.error ? { error: status.error } : {}),
             };
-        });
+        }, diagHosts);
     }
 
     // Retry startup with backoff. With a status endpoint the process stays up

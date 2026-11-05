@@ -19,6 +19,9 @@ networks:
     allow:
       - wick.keanu.im             # Matrix homeserver (must match MATRIX_HOMESERVER_URL)
       - inference.tinfoil.sh      # Tinfoil inference API
+      # inference.tinfoil.sh is a CNAME chain ending here; listed explicitly in
+      # case the egress firewall doesn't follow CNAMEs.
+      - inference.tinfoil.containers.tinfoil.dev
       - atc.tinfoil.sh            # Tinfoil attestation verification
       - github-proxy.tinfoil.sh   # attestation fallbacks used by the Tinfoil SDK
       - kds-proxy.tinfoil.sh
