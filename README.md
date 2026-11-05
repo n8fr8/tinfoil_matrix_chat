@@ -58,6 +58,9 @@ All settings come from environment variables (loaded from `.env`). See [`.env.ex
 | `MATRIX_HOMESERVER_URL` | — | Homeserver client API URL, e.g. `https://matrix.org`. |
 | `MATRIX_ACCESS_TOKEN` | — | Access token (or use username/password). |
 | `MATRIX_USERNAME` / `MATRIX_PASSWORD` | — | Used for login if no token. |
+| `MATRIX_DISPLAY_NAME` | _(unchanged)_ | Bot's display name in rooms; applied on startup. |
+| `MATRIX_CLEANUP_OLD_DEVICES` | `false` | After a password login, delete this account's other devices named `MATRIX_DEVICE_NAME`. |
+| `HEALTH_PORT` | _(off)_ | Serve a JSON status endpoint on this port (`8080` in the container). |
 | `MATRIX_ENCRYPTION` | `true` | Enable E2EE (Rust crypto store). |
 | `MATRIX_AUTOJOIN` | `true` | Auto-join on invite. |
 | `MATRIX_COMMAND_PREFIX` | _(empty)_ | If set, only reply to messages starting with this. |
@@ -93,6 +96,35 @@ Ask for a spoken answer in your own words, by text or in a voice message ("reply
 
 `npm run probe` sends one test message through Tinfoil and prints the reply (`npm run probe "Tell me about Mars"` for a custom message).
 
+## Deploying as a Tinfoil Container
+
+The bot can run inside a [Tinfoil Container](https://docs.tinfoil.sh/containers/overview), so the bot itself (including your Matrix password, decrypted messages, and attachments) runs inside a secure enclave, not just the AI inference.
+
+What's in the repo:
+
+- `Dockerfile`: Node 22 + ffmpeg image. Settings come from the environment; `.env` is never copied in (see `.dockerignore`).
+- `tinfoil-config.yml`: the enclave config. CPUs/memory, an outbound allowlist (the homeserver plus Tinfoil's API), in-memory storage, healthcheck, and which settings/secrets the bot gets.
+- `.github/workflows/tinfoil-release*.yml`: Tinfoil's standard release workflows. They build the image, pin its digest in `tinfoil-config.yml`, and publish a signed release.
+
+### Steps
+
+1. Push this repo to GitHub as a **public** repository (Tinfoil requires the config to be public so anyone can verify the enclave). Make sure `.env` is not committed.
+2. In `tinfoil-config.yml`, replace `OWNER/REPO` in `image:` with the repo's path (e.g. `ghcr.io/my-org/melong_matrix`). If your homeserver isn't `wick.keanu.im`, change it in both `MATRIX_HOMESERVER_URL` and the `allow` list. Commit.
+3. In the [Tinfoil dashboard](https://dash.tinfoil.sh) → **Secrets**, add `TINFOIL_API_KEY` and `MATRIX_PASSWORD`.
+4. Run the release workflow: `gh workflow run tinfoil-release.yml -f version=v0.1.0` (or **Actions → Tinfoil Release**).
+5. Dashboard → **Containers → Deploy**, pick the repo and tag, and set `MATRIX_USERNAME` (plus optionally `MATRIX_DISPLAY_NAME` / `MATRIX_COMMAND_PREFIX`).
+6. Check `https://<container-name>.<org>.containers.tinfoil.dev/health`; it returns `{"ok":true,...}` once the bot is syncing.
+
+To update: commit changes, run the release workflow with a new version, then click **Update** in the dashboard.
+
+### How storage works in the container
+
+The container's storage is in memory and is wiped on every restart. So the container uses **password login** (not `MATRIX_ACCESS_TOKEN`): each start logs in as a new Matrix device with fresh encryption keys, and `MATRIX_CLEANUP_OLD_DEVICES=true` deletes the bot's previous devices (only ones named `MATRIX_DEVICE_NAME`). The bot also ignores messages sent before it started, so it doesn't answer old history after a restart. Conversation memory resets on restart too.
+
+Consequences: after a restart the bot can't read encrypted messages sent before it came back, and people who verify devices will see a new, unverified bot device. Tinfoil's [encrypted persistent volumes](https://docs.tinfoil.sh/containers/encrypted-volumes) (beta, needs your own keyserver) could keep state across restarts.
+
+**Don't run the bot locally and in the container with the same account and device name at the same time.** Each start removes the other's device.
+
 ## Project layout
 
 ```
@@ -103,6 +135,7 @@ src/
   melong.js  chat client with per-room memory (Tinfoil SDK)
   media.js   attachment download/decrypt + ffmpeg audio conversion
   format.js  Markdown -> Matrix HTML for replies
+  health.js  HTTP status endpoint (for containers)
   login.js   one-off: print an access token
 ```
 

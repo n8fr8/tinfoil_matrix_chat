@@ -40,6 +40,8 @@ export function loadConfig() {
         username: env.MATRIX_USERNAME || "",
         password: env.MATRIX_PASSWORD || "",
         deviceName: env.MATRIX_DEVICE_NAME || "melong-bot",
+        // Name shown for the bot in rooms. Set on startup; empty leaves it unchanged.
+        displayName: (env.MATRIX_DISPLAY_NAME || "").trim(),
 
         // --- Local persistence ---
         storagePath: env.MATRIX_STORAGE_PATH || "./data/bot.json",
@@ -53,6 +55,12 @@ export function loadConfig() {
         // the prefix. When empty, it replies to every text message in rooms it is in.
         commandPrefix: env.MATRIX_COMMAND_PREFIX ?? "",
         logLevel: env.MATRIX_LOG_LEVEL || "INFO",
+        // Port for the HTTP status endpoint (needed in Tinfoil Containers). Off when unset.
+        healthPort: env.HEALTH_PORT ? Number(env.HEALTH_PORT) : 0,
+        // After a fresh password login, delete this account's other devices that
+        // have the same device name. Useful when storage doesn't survive restarts
+        // (each restart logs in as a new device).
+        cleanupOldDevices: bool(env.MATRIX_CLEANUP_OLD_DEVICES, false),
 
         // --- Attachments ---
         // Files larger than this are refused (Tinfoil's document limit is 50 MB).
@@ -71,6 +79,7 @@ export function loadConfig() {
     }
     if (!env.TINFOIL_API_KEY) errors.push("TINFOIL_API_KEY is required");
     if (Number.isNaN(config.chat.maxNewTokens)) errors.push("CHAT_MAX_NEW_TOKENS must be a number");
+    if (Number.isNaN(config.healthPort)) errors.push("HEALTH_PORT must be a number");
     if (Number.isNaN(config.maxAttachmentBytes)) errors.push("CHAT_MAX_ATTACHMENT_MB must be a number");
     if (Number.isNaN(config.chat.historyTurns)) errors.push("CHAT_HISTORY_TURNS must be a number");
 

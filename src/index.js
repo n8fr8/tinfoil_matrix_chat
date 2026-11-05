@@ -17,6 +17,7 @@ import { loadConfig } from "./config.js";
 import { resolveCredentials } from "./auth.js";
 import { ChatClient } from "./melong.js";
 import { markdownToMatrixHtml } from "./format.js";
+import { startHealthServer } from "./health.js";
 import {
     MEDIA_MSGTYPES,
     useAuthenticatedMedia,
@@ -29,10 +30,25 @@ import {
 
 async function main() {
     const config = loadConfig();
+    const startedAt = Date.now();
 
     LogService.setLogger(new RichConsoleLogger());
     LogService.setLevel(LogLevel.fromString(config.logLevel));
     LogService.muteModule("Metrics");
+
+    // Optional status endpoint (required by Tinfoil Containers; see src/health.js).
+    const status = { started: false, lastSyncAt: 0 };
+    if (config.healthPort) {
+        startHealthServer(config.healthPort, () => {
+            const syncAge = status.lastSyncAt ? Date.now() - status.lastSyncAt : null;
+            return {
+                ok: status.started && syncAge !== null && syncAge < 5 * 60 * 1000,
+                started: status.started,
+                secondsSinceLastSync: syncAge === null ? null : Math.round(syncAge / 1000),
+                uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
+            };
+        });
+    }
 
     // Make sure storage directories exist before the providers touch them.
     await fs.mkdir(path.dirname(config.storagePath), { recursive: true });
@@ -61,14 +77,25 @@ async function main() {
     const client = new MatrixClient(config.homeserverUrl, creds.accessToken, storage, cryptoStore);
     stripNullKeyUploadFields(client);
     useAuthenticatedMedia(client);
+    // Record successful syncs for the status endpoint.
+    const doSync = client.doSync.bind(client);
+    client.doSync = async (...args) => {
+        const res = await doSync(...args);
+        status.lastSyncAt = Date.now();
+        return res;
+    };
     if (config.autojoin) setupAutojoin(client);
 
     const chat = new ChatClient(config.chat);
 
     // Cache our own user id so we can ignore our own messages without an await per event.
     const botUserId = await client.getUserId();
+    if (config.displayName) await applyDisplayName(client, botUserId, config.displayName);
 
     client.on("room.message", (roomId, event) => {
+        // Skip messages sent before the bot started. Without a saved sync token
+        // (e.g. a fresh container), the first sync replays recent history.
+        if (event?.origin_server_ts && event.origin_server_ts < startedAt) return;
         handleMessage(client, chat, config, botUserId, roomId, event).catch((err) => {
             LogService.error("melong", `Failed to handle message in ${roomId}:`, err);
         });
@@ -81,6 +108,7 @@ async function main() {
     }
 
     await client.start();
+    status.started = true;
     LogService.info("melong", `Bot started as ${botUserId} (encryption ${config.encryption ? "on" : "off"})`);
 
     const shutdown = () => {
@@ -252,6 +280,19 @@ async function sendVoiceReply(client, chat, roomId, event, text) {
         "org.matrix.msc3245.voice": {},
         "m.relates_to": { "m.in_reply_to": { event_id: event.event_id } },
     });
+}
+
+// Sets the bot's global display name if it differs from the configured one.
+// Failures are logged but don't stop the bot.
+async function applyDisplayName(client, userId, displayName) {
+    try {
+        const profile = await client.getUserProfile(userId).catch(() => ({}));
+        if (profile?.displayname === displayName) return;
+        await client.setDisplayName(displayName);
+        LogService.info("melong", `Display name set to "${displayName}"`);
+    } catch (err) {
+        LogService.warn("melong", `Could not set display name: ${err?.body?.error || err?.message || err}`);
+    }
 }
 
 main().catch((err) => {

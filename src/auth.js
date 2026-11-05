@@ -3,7 +3,7 @@
 // happens once: logging in repeatedly would create a new device each time,
 // which breaks end-to-end encryption (each device has its own crypto identity).
 
-import { MatrixAuth } from "matrix-bot-sdk";
+import { MatrixAuth, LogService } from "matrix-bot-sdk";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 
@@ -64,5 +64,39 @@ export async function resolveCredentials(config) {
         deviceId,
     };
     await writeCache(config.credentialsPath, creds);
+    if (config.cleanupOldDevices && deviceId) await deleteOldDevices(loginClient, config, deviceId);
     return { ...creds, source: "login" };
+}
+
+// Deletes this account's other devices that share our device name (left over
+// from previous logins whose storage was lost). Needs the password because the
+// homeserver requires re-authentication to delete devices. Never fatal.
+async function deleteOldDevices(client, config, currentDeviceId) {
+    try {
+        const { devices = [] } = await client.doRequest("GET", "/_matrix/client/v3/devices");
+        const stale = devices
+            .filter((d) => d.device_id !== currentDeviceId && d.display_name === config.deviceName)
+            .map((d) => d.device_id);
+        if (!stale.length) return;
+
+        const userId = await client.getUserId();
+        const request = (auth) =>
+            client.doRequest("POST", "/_matrix/client/v3/delete_devices", null, { devices: stale, ...(auth ? { auth } : {}) });
+        try {
+            await request();
+        } catch (err) {
+            // Expected: 401 with a user-interactive auth session. Retry with the password.
+            const session = err?.body?.session;
+            if (err?.statusCode !== 401 || !session) throw err;
+            await request({
+                type: "m.login.password",
+                identifier: { type: "m.id.user", user: userId },
+                password: config.password,
+                session,
+            });
+        }
+        LogService.info("melong", `Removed ${stale.length} old "${config.deviceName}" device(s)`);
+    } catch (err) {
+        LogService.warn("melong", `Could not remove old devices: ${err?.body?.error || err?.message || err}`);
+    }
 }
