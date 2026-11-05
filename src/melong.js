@@ -18,6 +18,23 @@
 import { TinfoilAI } from "tinfoil";
 import { toMp3 } from "./media.js";
 
+// Builds the Tinfoil SDK client. By default the SDK asks Tinfoil's attestation
+// service for a router and gets a random one (e.g. router-0.tinfoil.sh or
+// inference.tinfoil.sh). Inside a Tinfoil Container, egress is limited to an
+// allowlist, so we pin the router: TINFOIL_ENCLAVE_URL (default
+// https://inference.tinfoil.sh). It is still attested and verified against
+// Tinfoil's official router code. TINFOIL_TRANSPORT=tls switches the transport
+// from EHBP (default) to TLS pinning.
+export function createTinfoilClient(overrides = {}) {
+    const options = {
+        enclaveURL: process.env.TINFOIL_ENCLAVE_URL || "https://inference.tinfoil.sh",
+        configRepo: process.env.TINFOIL_CONFIG_REPO || "tinfoilsh/confidential-model-router",
+        ...(process.env.TINFOIL_TRANSPORT ? { transport: process.env.TINFOIL_TRANSPORT } : {}),
+        ...overrides,
+    };
+    return new TinfoilAI(options);
+}
+
 export const DEFAULT_SYSTEM_PROMPT =
     "You are a friendly, knowledgeable assistant chatting in a Matrix room. " +
     "Help with any topic people bring up. Keep replies clear and conversational, " +
@@ -57,8 +74,7 @@ export class ChatClient {
         // Number of past user/assistant exchanges to remember per conversation.
         this.historyTurns = historyTurns;
         this.timeoutMs = timeoutMs;
-        // TINFOIL_TRANSPORT=tls switches the SDK from EHBP (default) to TLS pinning.
-        this.client = client || new TinfoilAI(process.env.TINFOIL_TRANSPORT ? { transport: process.env.TINFOIL_TRANSPORT } : {});
+        this.client = client || createTinfoilClient();
         this.histories = new Map();
     }
 

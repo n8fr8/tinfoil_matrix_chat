@@ -6,7 +6,7 @@
 //   4. same through the SDK's TLS transport
 // Each call asks for ~5 tokens. Callers rate-limit how often this runs.
 
-import { TinfoilAI } from "tinfoil";
+import { createTinfoilClient } from "./melong.js";
 
 const MODEL = () => process.env.TINFOIL_MODEL || "gemma4-31b";
 const STEP_TIMEOUT_MS = 45000;
@@ -53,9 +53,9 @@ export async function runInferenceDiagnostics() {
         }),
     );
 
-    const ehbp = new TinfoilAI();
+    const ehbp = createTinfoilClient({ transport: "ehbp" });
     results.push(await step("sdk-attestation", () => ehbp.ready()));
     results.push(await step("sdk-chat-ehbp", () => tinyChat(ehbp)));
-    results.push(await step("sdk-chat-tls", () => tinyChat(new TinfoilAI({ transport: "tls" }))));
+    results.push(await step("sdk-chat-tls", () => tinyChat(createTinfoilClient({ transport: "tls" }))));
     return results;
 }
