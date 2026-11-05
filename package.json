@@ -1,0 +1,19 @@
+{
+  "name": "melong-matrix",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A Matrix chat bot that translates messages via the Melong Hugging Face inference endpoint.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/index.js",
+    "login": "node --env-file-if-exists=.env src/login.js",
+    "probe": "node --env-file-if-exists=.env src/probe.js"
+  },
+  "engines": {
+    "node": ">=20.11.0"
+  },
+  "dependencies": {
+    "matrix-bot-sdk": "^0.7.1"
+  }
+}
