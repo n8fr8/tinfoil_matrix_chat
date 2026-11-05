@@ -57,7 +57,8 @@ export class ChatClient {
         // Number of past user/assistant exchanges to remember per conversation.
         this.historyTurns = historyTurns;
         this.timeoutMs = timeoutMs;
-        this.client = client || new TinfoilAI();
+        // TINFOIL_TRANSPORT=tls switches the SDK from EHBP (default) to TLS pinning.
+        this.client = client || new TinfoilAI(process.env.TINFOIL_TRANSPORT ? { transport: process.env.TINFOIL_TRANSPORT } : {});
         this.histories = new Map();
     }
 
@@ -135,6 +136,7 @@ export class ChatClient {
             : { role: "user", content: prompt };
 
         let completion;
+        const started = Date.now();
         try {
             completion = await this.client.chat.completions.create(
                 {
@@ -145,7 +147,7 @@ export class ChatClient {
                 { timeout: this.timeoutMs, signal: opts.signal },
             );
         } catch (err) {
-            throw new Error(`Tinfoil request failed: ${describeError(err)}`);
+            throw new Error(`Tinfoil request failed after ${Math.round((Date.now() - started) / 1000)}s: ${describeError(err)}`);
         }
 
         let out = (completion?.choices?.[0]?.message?.content ?? "").toString().trim();

@@ -5,16 +5,22 @@
 //   /, /health  bot status (200 when syncing, 503 otherwise)
 //   /diag       outbound connectivity check (DNS + TLS) to the hosts the bot
 //               needs; results are cached for a minute.
+//   /diag?inference=1
+//               also runs a tiny end-to-end Tinfoil inference test (see
+//               diag-inference.js); at most once every 5 minutes.
 
 import http from "node:http";
 import tls from "node:tls";
 import dns from "node:dns/promises";
 import { LogService } from "matrix-bot-sdk";
+import { runInferenceDiagnostics } from "./diag-inference.js";
 
 const DIAG_TTL_MS = 60 * 1000;
+const INFERENCE_DIAG_TTL_MS = 5 * 60 * 1000;
 
 export function startHealthServer(port, getStatus, getDiagHosts = () => []) {
     let diagCache = null;
+    let inferenceCache = null;
 
     const server = http.createServer(async (req, res) => {
         const send = (code, obj) => {
@@ -26,7 +32,14 @@ export function startHealthServer(port, getStatus, getDiagHosts = () => []) {
                 if (!diagCache || Date.now() - diagCache.at > DIAG_TTL_MS) {
                     diagCache = { at: Date.now(), promise: runDiagnostics(getDiagHosts()) };
                 }
-                return send(200, { checkedAt: new Date(diagCache.at).toISOString(), results: await diagCache.promise });
+                const body = { checkedAt: new Date(diagCache.at).toISOString(), results: await diagCache.promise };
+                if (new URL(req.url, "http://x").searchParams.has("inference")) {
+                    if (!inferenceCache || Date.now() - inferenceCache.at > INFERENCE_DIAG_TTL_MS) {
+                        inferenceCache = { at: Date.now(), promise: runInferenceDiagnostics() };
+                    }
+                    body.inference = { checkedAt: new Date(inferenceCache.at).toISOString(), steps: await inferenceCache.promise };
+                }
+                return send(200, body);
             }
             const status = getStatus();
             send(status.ok ? 200 : 503, status);
