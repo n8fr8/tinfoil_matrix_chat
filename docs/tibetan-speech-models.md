@@ -12,7 +12,7 @@ Work done November 2026 for the Melong Matrix bot prototype.
 | Tibetan text-to-speech | `facebook/mms-tts-bod` (ONNX in the sidecar) | The only usable open Tibetan TTS model found; fast on CPU |
 | Other languages, speech-to-text | Tinfoil's hosted `whisper-large-v3-turbo` | Good transcripts, and its confidence score tells Tibetan apart from other languages |
 | Tibetan vs other language routing | Whisper's confidence, threshold −0.45 | 58 of 59 real clips routed correctly |
-| Chat / reply model | Tinfoil's hosted `kimi-k3` (was `gemma4-31b`) | Writes clean Tibetan script; Gemma mixed in other scripts. Slower (~30 s for a Tibetan answer) |
+| Chat / reply model | Tinfoil's hosted `deepseek-v4-1-flash` (briefly `kimi-k3`; originally `gemma4-31b`) | Clean Tibetan script and ~4 s for a Tibetan answer; Gemma mixed in other scripts, Kimi took 20–40 s |
 
 ## Constraints
 
@@ -145,13 +145,28 @@ above to English, from the clean reference text and from MMS transcripts, and
   Tibetan script; DeepSeek was fastest (3–5 s). Fluency has not been judged by
   a native speaker.
 
-**Decision: `kimi-k3`.** Checked as a general chat model before switching: chat
+**First switch: `kimi-k3`.** Checked as a general chat model before switching: chat
 6–8 s, image description 7 s, document summary 9 s, a Tibetan question ~30 s
 (about 1,500 tokens, mostly reasoning). Because reasoning counts against the
 token limit, `CHAT_MAX_NEW_TOKENS` went from 2,048 to 16,000 and the request
 timeout to 5 minutes. End to end, the real voice note "What do you need? I'll
 get it for you" got a sensible reply in clean Tibetan (36 s in total).
 `reasoning_effort: "low"` is accepted but did not make Tibetan answers faster.
+
+**Then: `deepseek-v4-1-flash`** (current). Same prompts, one request at a time,
+three runs each:
+
+| Task | DeepSeek V4.1 Flash | Kimi K3 |
+|---|---|---|
+| Short English chat | 0.4–0.6 s (13 s on a cold first call) | 1.7–2.8 s |
+| Tibetan question (Losar traditions) | 3.9–8.0 s | 25–40 s |
+| Reply to a Tibetan voice-note transcript | 2.4–4.5 s | 20–31 s |
+| Other scripts mixed into Tibetan | none | none |
+
+Both understood the voice note the same way. DeepSeek translated the eight
+colloquial sentences at least as well as Kimi, in 12 s against 90 s. Known risk:
+on two ambiguous translation jobs it reasoned until a 12,000-token limit
+(~40 s); the bot now has a 16,000-token limit and reports running out clearly.
 
 ### Monlam Melong (not used yet)
 

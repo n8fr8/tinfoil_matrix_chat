@@ -84,7 +84,7 @@ const TRANSCRIBABLE = new Set(["audio/mpeg", "audio/mp3", "audio/wav", "audio/x-
 
 export class ChatClient {
     constructor({
-        model = "kimi-k3",
+        model = "deepseek-v4-1-flash",
         transcriptionModel = "voxtral-small-24b",
         ttsModel = "voxtral-tts",
         ttsVoice = "neutral_female",

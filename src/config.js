@@ -13,9 +13,9 @@ function bool(value, fallback) {
 export function loadChatConfig(env = process.env) {
     return {
         // Model ID from https://docs.tinfoil.sh/models/overview
-        model: env.TINFOIL_MODEL || "kimi-k3",
+        model: env.TINFOIL_MODEL || "deepseek-v4-1-flash",
         // Leave room for the model's thinking + the answer.
-        // Includes the model's reasoning ("thinking") tokens: kimi-k3 can use
+        // Includes the model's reasoning ("thinking") tokens: thinking models can use
         // ~1,500 thinking a Tibetan answer through, and more on hard requests.
         maxNewTokens: env.CHAT_MAX_NEW_TOKENS ? Number(env.CHAT_MAX_NEW_TOKENS) : 16000,
         // Optional override for the bot's personality / instructions.

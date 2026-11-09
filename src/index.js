@@ -55,7 +55,7 @@ async function main() {
                 started: status.started,
                 secondsSinceLastSync: syncAge === null ? null : Math.round(syncAge / 1000),
                 uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
-                model: process.env.TINFOIL_MODEL || "kimi-k3",
+                model: process.env.TINFOIL_MODEL || "deepseek-v4-1-flash",
                 ...(status.speechStatus ? { speechSidecar: status.speechStatus } : {}),
                 ...(status.error ? { error: status.error } : {}),
             };

@@ -8,7 +8,7 @@
 
 import { createTinfoilClient } from "./melong.js";
 
-const MODEL = () => process.env.TINFOIL_MODEL || "kimi-k3";
+const MODEL = () => process.env.TINFOIL_MODEL || "deepseek-v4-1-flash";
 const STEP_TIMEOUT_MS = 45000;
 
 async function step(name, fn) {
@@ -34,7 +34,7 @@ function describe(err) {
 
 const tinyChat = (client) =>
     client.chat.completions
-        .create({ model: MODEL(), messages: [{ role: "user", content: "Reply with just: OK" }], max_tokens: 5 }, { timeout: STEP_TIMEOUT_MS, maxRetries: 0 })
+        .create({ model: MODEL(), messages: [{ role: "user", content: "Reply with just: OK" }], max_tokens: 2000 }, { timeout: STEP_TIMEOUT_MS, maxRetries: 0 })
         .then((r) => ({ reply: r?.choices?.[0]?.message?.content?.slice(0, 40) ?? null }));
 
 export async function runInferenceDiagnostics() {
@@ -44,7 +44,7 @@ export async function runInferenceDiagnostics() {
             const res = await fetch("https://inference.tinfoil.sh/v1/chat/completions", {
                 method: "POST",
                 headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.TINFOIL_API_KEY}` },
-                body: JSON.stringify({ model: MODEL(), messages: [{ role: "user", content: "Reply with just: OK" }], max_tokens: 5 }),
+                body: JSON.stringify({ model: MODEL(), messages: [{ role: "user", content: "Reply with just: OK" }], max_tokens: 2000 }),
                 signal: AbortSignal.timeout(STEP_TIMEOUT_MS),
             });
             const text = await res.text();
