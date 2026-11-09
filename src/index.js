@@ -56,7 +56,7 @@ async function main() {
                 secondsSinceLastSync: syncAge === null ? null : Math.round(syncAge / 1000),
                 uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
                 model: process.env.TINFOIL_MODEL || "deepseek-v4-1-flash",
-                webSearch: config.chat.webSearch,
+                ...(status.webSearch !== undefined ? { webSearch: status.webSearch } : {}),
                 ...(status.speechStatus ? { speechSidecar: status.speechStatus } : {}),
                 ...(status.error ? { error: status.error } : {}),
             };
@@ -81,6 +81,7 @@ async function main() {
 
 async function startBot(status, startedAt) {
     const config = loadConfig();
+    status.webSearch = config.chat.webSearch;
 
     // Fail early, with a clear message, if runtime storage isn't writable
     // (e.g. a container tmpfs owned by a different user).
