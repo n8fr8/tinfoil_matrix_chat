@@ -80,6 +80,12 @@ const TIBETAN_SPEECH_INSTRUCTIONS = {
 };
 const STT_MODES = Object.keys(TIBETAN_SPEECH_INSTRUCTIONS);
 
+// Tinfoil web search (https://docs.tinfoil.sh/guides/web-search). The model
+// decides when to search; searches run in Tinfoil's enclave via Exa. The two
+// filters mask personal data in queries and drop prompt-injection attempts
+// from results. Sources come back as inline Markdown links.
+const WEB_SEARCH_FIELDS = { web_search_options: {}, pii_check_options: {}, prompt_injection_check_options: {} };
+
 const TRANSCRIBABLE = new Set(["audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/wave"]);
 
 export class ChatClient {
@@ -97,7 +103,9 @@ export class ChatClient {
         speechStt = "auto", // see TIBETAN_SPEECH_INSTRUCTIONS
         detectModel = "whisper-large-v3-turbo", // decides Tibetan vs other ("auto")
         detectThreshold = -0.45,
+        webSearch = true,
     } = {}) {
+        this.webSearch = webSearch;
         this.detectModel = detectModel;
         this.detectThreshold = detectThreshold;
         this.speech = speech;
@@ -182,6 +190,7 @@ export class ChatClient {
     // Tibetan stretches are spoken by it and everything else by Tinfoil; mixed
     // replies (e.g. Tibetan plus an English gloss) are stitched together.
     async speak(text) {
+        text = forSpeech(text);
         const runs = this.speech ? splitByScript(text) : [];
         if (!runs.some((r) => r.tibetan)) return this.speakGeneral(text);
         if (runs.length === 1) return this.speakTibetan(runs[0].text);
@@ -259,6 +268,7 @@ export class ChatClient {
                     model: this.model,
                     messages: [{ role: "system", content: system }, ...history, userMsg],
                     max_tokens: this.maxNewTokens,
+                    ...(this.webSearch ? WEB_SEARCH_FIELDS : {}),
                 },
                 { timeout: this.timeoutMs, signal: opts.signal },
             );
@@ -281,6 +291,18 @@ export class ChatClient {
         this.histories.set(conversationId, updated.slice(-this.historyTurns * 2));
         return { text: out, voice };
     }
+}
+
+// Text to read aloud: drops Markdown links (web search citations) and bare URLs.
+export function forSpeech(text) {
+    return text
+        .replace(/\[[^\]]*\]\([^)\s]*\)/g, "")
+        .replace(/https?:\/\/\S+/g, "")
+        .replace(/[ \t]+([.,;:!?།])/g, "$1")
+        .replace(/[,;:]+(?=[.!?།])/g, "")
+        .replace(/[ \t]{2,}/g, " ")
+        .replace(/[ \t]+\n/g, "\n")
+        .trim();
 }
 
 // Error message plus the underlying network cause, if any.

@@ -39,6 +39,8 @@ export function loadChatConfig(env = process.env) {
         // Whisper confidence (mean log-probability) above which speech is
         // treated as not Tibetan.
         detectThreshold: env.SPEECH_DETECT_THRESHOLD ? Number(env.SPEECH_DETECT_THRESHOLD) : -0.45,
+        // Let the model search the web (Tinfoil web search) when it needs to.
+        webSearch: !/^(false|0|no|off)$/i.test((env.WEB_SEARCH || "true").trim()),
     };
 }
 

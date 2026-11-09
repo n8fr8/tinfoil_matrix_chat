@@ -56,6 +56,7 @@ async function main() {
                 secondsSinceLastSync: syncAge === null ? null : Math.round(syncAge / 1000),
                 uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
                 model: process.env.TINFOIL_MODEL || "deepseek-v4-1-flash",
+                webSearch: config.chat.webSearch,
                 ...(status.speechStatus ? { speechSidecar: status.speechStatus } : {}),
                 ...(status.error ? { error: status.error } : {}),
             };

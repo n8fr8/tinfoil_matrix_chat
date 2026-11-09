@@ -14,6 +14,7 @@ Send the bot a message and it replies. It remembers recent messages in each room
 - Replies are rendered as rich text (bold, lists, code blocks, tables) in Matrix clients.
 - Understands attachments: images, documents (PDF, Word, PowerPoint, Excel, CSV, text), audio and voice messages, and the soundtrack of videos. See [Attachments](#attachments).
 - Answers voice messages with a voice message (plus the text), and replies by voice when asked ("answer with a voice message", "say it out loud"). See [Voice replies](#voice-replies).
+- Searches the web when a question needs current information, and cites its sources (Tinfoil web search; `WEB_SEARCH=false` turns it off). See [Web search](#web-search).
 - Remembers the last few exchanges per room (in memory; cleared on restart or with `!reset`).
 
 ## Requirements
@@ -70,10 +71,19 @@ All settings come from environment variables (loaded from `.env`). See [`.env.ex
 | `CHAT_HISTORY_TURNS` | `10` | Past exchanges remembered per room (`0` = none). |
 | `CHAT_MAX_NEW_TOKENS` | `16000` | Reply length cap, including the model's reasoning ("thinking") tokens. |
 | `CHAT_TIMEOUT_MS` | `300000` | Request timeout (thinking models can take a minute or more). |
+| `WEB_SEARCH` | `true` | Let the model search the web when it needs to. See [Web search](#web-search). |
 | `TINFOIL_TRANSCRIPTION_MODEL` | `voxtral-small-24b` | Speech-to-text model for audio and video. |
 | `CHAT_MAX_ATTACHMENT_MB` | `25` | Larger attachments are refused. |
 | `TINFOIL_TTS_MODEL` | `voxtral-tts` | Text-to-speech model for voice replies (`qwen3-tts` is the lower-latency alternative). |
 | `TINFOIL_TTS_VOICE` | `neutral_female` | Voice name; must be one the TTS model offers (see `.env.example`). |
+
+### Web search
+
+With `WEB_SEARCH=true` (the default) the bot asks for [Tinfoil web search](https://docs.tinfoil.sh/guides/web-search) on every message. The model decides whether to search: small talk is answered directly (about 4 s), and questions about current events search first (about 10 s). Sources appear as links in the text reply. Voice replies leave the links out.
+
+- Searches run inside Tinfoil's enclave, which queries [Exa](https://exa.ai) under a zero-data-retention agreement. Exa sees the enclave's address, not the bot's.
+- The bot turns on both of Tinfoil's filters: personal data (emails, phone numbers, account numbers, secrets) is masked from search queries, and results that try to inject instructions are dropped. The masking is model-based, so it can miss things.
+- Tinfoil charges a web search fee once per request that actually searches.
 
 ### Attachments
 
