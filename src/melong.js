@@ -53,14 +53,25 @@ const VOICE_INSTRUCTIONS =
     `spoken text: no Markdown, lists, tables, code, emoji, or URLs, and keep it ` +
     `reasonably short. Never use the tag otherwise.`;
 
-// Added when the Tibetan speech sidecar is enabled.
-const TIBETAN_SPEECH_INSTRUCTIONS =
-    `\n\nVoice messages may come with two transcripts: one from a general ` +
-    `multilingual speech model and one from a Tibetan-only speech model. The ` +
-    `Tibetan model always outputs Tibetan script, even for other languages, and ` +
-    `has no punctuation and some spelling errors. Use whichever transcript is ` +
-    `coherent. When writing a spoken reply in Tibetan, write numbers as words and ` +
-    `use only Tibetan script.`;
+// Added when the Tibetan speech sidecar is enabled, depending on SPEECH_STT.
+const TIBETAN_REPLY_RULE =
+    ` When writing a spoken reply in Tibetan, write numbers as words and use only Tibetan script.`;
+const TIBETAN_SPEECH_INSTRUCTIONS = {
+    tibetan:
+        `\n\nVoice messages and audio are transcribed by a Tibetan speech model. Its ` +
+        `transcripts are in Tibetan script, with no punctuation and some spelling ` +
+        `errors: read them charitably, as spoken Tibetan. Reply to a voice message ` +
+        `in Tibetan unless the user asks for another language.` + TIBETAN_REPLY_RULE,
+    both:
+        `\n\nVoice messages may come with two transcripts: one from a general ` +
+        `multilingual speech model and one from a Tibetan-only speech model. The ` +
+        `Tibetan model always outputs Tibetan script, even for other languages, and ` +
+        `has no punctuation and some spelling errors. The general model often turns ` +
+        `Tibetan speech into romanized or invented words; if the Tibetan transcript ` +
+        `is plausible Tibetan, prefer it.` + TIBETAN_REPLY_RULE,
+    general: "",
+};
+const STT_MODES = Object.keys(TIBETAN_SPEECH_INSTRUCTIONS);
 
 const TRANSCRIBABLE = new Set(["audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/wave"]);
 
@@ -76,8 +87,11 @@ export class ChatClient {
         timeoutMs = 120000,
         client,
         speech = null, // SpeechSidecar for Tibetan TTS/STT (optional)
+        speechStt = "tibetan", // see TIBETAN_SPEECH_INSTRUCTIONS
     } = {}) {
         this.speech = speech;
+        if (!STT_MODES.includes(speechStt)) throw new Error(`SPEECH_STT must be one of ${STT_MODES.join(", ")}`);
+        this.speechStt = speech ? speechStt : "general";
         this.model = model;
         this.transcriptionModel = transcriptionModel;
         this.ttsModel = ttsModel;
@@ -116,22 +130,27 @@ export class ChatClient {
         }
     }
 
-    // Transcript block(s) for an audio/video attachment. With the Tibetan
-    // sidecar, runs both models in parallel and labels each transcript.
+    // Transcript block(s) for an audio/video attachment, from the Tibetan
+    // sidecar, the general model, or both in parallel (SPEECH_STT).
     async transcribeForModel(a) {
         const header = `[Transcript of ${a.kind} "${a.filename}"`;
-        if (!this.speech) {
-            const transcript = await this.transcribe(a);
-            return `${header}]:\n${transcript || "(no speech detected)"}`;
+        const show = (t) => t || "(no speech detected)";
+        if (this.speechStt === "general") return `${header}]:\n${show(await this.transcribe(a))}`;
+        if (this.speechStt === "tibetan") {
+            try {
+                return `${header}, Tibetan speech model]:\n${show(await this.speech.stt(a.data))}`;
+            } catch (err) {
+                throw new Error(`Tibetan transcription failed: ${err?.message || err}`);
+            }
         }
         const [general, tibetan] = await Promise.allSettled([this.transcribe(a), this.speech.stt(a.data)]);
         if (general.status === "rejected" && tibetan.status === "rejected") throw general.reason;
         if (tibetan.status === "rejected") LogService.warn("melong", `Tibetan transcription failed: ${tibetan.reason?.message}`);
         if (general.status === "rejected") LogService.warn("melong", `General transcription failed: ${general.reason?.message}`);
-        const show = (r) => (r.status === "fulfilled" ? r.value || "(no speech detected)" : "(unavailable)");
+        const result = (r) => (r.status === "fulfilled" ? show(r.value) : "(unavailable)");
         return (
-            `${header}, general multilingual model]:\n${show(general)}\n` +
-            `${header}, Tibetan speech model]:\n${show(tibetan)}`
+            `${header}, general multilingual model]:\n${result(general)}\n` +
+            `${header}, Tibetan speech model]:\n${result(tibetan)}`
         );
     }
 
@@ -196,7 +215,7 @@ export class ChatClient {
             completion = await this.client.chat.completions.create(
                 {
                     model: this.model,
-                    messages: [{ role: "system", content: this.systemPrompt + VOICE_INSTRUCTIONS + (this.speech ? TIBETAN_SPEECH_INSTRUCTIONS : "") }, ...history, userMsg],
+                    messages: [{ role: "system", content: this.systemPrompt + VOICE_INSTRUCTIONS + TIBETAN_SPEECH_INSTRUCTIONS[this.speechStt] }, ...history, userMsg],
                     max_tokens: this.maxNewTokens,
                 },
                 { timeout: this.timeoutMs, signal: opts.signal },

@@ -29,6 +29,10 @@ export function loadChatConfig(env = process.env) {
         ttsVoice: env.TINFOIL_TTS_VOICE || "neutral_female",
         // Tibetan speech sidecar (speech/), e.g. http://speech:8000. Empty = off.
         speechUrl: (env.SPEECH_URL || "").trim(),
+        // Who transcribes voice notes when the sidecar is on: "tibetan" (the
+        // sidecar only), "both" (sidecar + transcriptionModel; the chat model
+        // picks) or "general" (transcriptionModel only).
+        speechStt: (env.SPEECH_STT || "tibetan").trim().toLowerCase(),
     };
 }
 
