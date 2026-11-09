@@ -1,15 +1,16 @@
 """Tibetan speech sidecar for the Melong bot.
 
-Runs Meta's MMS models on CPU and serves them over HTTP on the enclave's
-internal network (no internet access):
+Runs Meta's MMS models on CPU with ONNX Runtime and serves them over HTTP on the
+enclave's internal network (no internet access):
 
   GET  /health  {"ok": true, ...} once both models are loaded
   POST /tts     JSON {"text": "<Tibetan text>"}       -> audio/wav (16 kHz mono)
   POST /stt     audio/wav body (16 kHz mono PCM16)    -> JSON {"text": "..."}
 
-Models (prepared at image build time from pinned revisions, see download_models.py):
+Models (exported to ONNX at image build time from pinned revisions, see
+build_models.py):
   facebook/mms-tts-bod                  text-to-speech (VITS)
-  facebook/mms-1b-all + "bod" adapter   speech-to-text (wav2vec2 CTC)
+  facebook/mms-1b-all + "bod" adapter   speech-to-text (wav2vec2 CTC, int8)
 Both are licensed CC-BY-NC 4.0 (non-commercial use, attribution required).
 """
 
@@ -23,21 +24,19 @@ import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import numpy as np
-import torch
-from transformers import AutoProcessor, AutoTokenizer, VitsModel
+import onnxruntime as ort
+
+from speech_core import CtcProcessor, VitsTokenizer
 
 PORT = int(os.environ.get("PORT", "8000"))
-THREADS = int(os.environ.get("TORCH_THREADS", "2"))
+THREADS = int(os.environ.get("ORT_THREADS", "2"))
 MODELS_DIR = os.environ.get("MODELS_DIR", "/models")
 MAX_TEXT_CHARS = 5000
 MAX_AUDIO_SECONDS = 600
-STT_CHUNK_SECONDS = 20  # bounds memory/latency per forward pass
+STT_CHUNK_SECONDS = 20  # bounds memory/latency per inference
 SAMPLE_RATE = 16000
 
-from download_models import STT_MODEL_DIR, STT_PROCESSOR_DIR, TTS_DIR, load_quantized  # noqa: E402
-
-torch.set_num_threads(THREADS)
-state = {"ready": False, "error": None, "loaded_at": None}
+state = {"ready": False, "error": None}
 lock = threading.Lock()  # one inference at a time; the CPUs are shared
 models = {}
 
@@ -46,21 +45,29 @@ def log(msg):
     print(f"[speech] {msg}", flush=True)
 
 
+def session(path):
+    so = ort.SessionOptions()
+    so.intra_op_num_threads = THREADS
+    so.inter_op_num_threads = 1
+    return ort.InferenceSession(path, so, providers=["CPUExecutionProvider"])
+
+
 def load_models():
     try:
         t = time.time()
-        tts_dir = os.path.join(MODELS_DIR, TTS_DIR)
-        models["tts_tok"] = AutoTokenizer.from_pretrained(tts_dir)
-        models["tts"] = VitsModel.from_pretrained(tts_dir).eval()
-        models["tts_vocab"] = set(models["tts_tok"].get_vocab())
+        tts_dir = os.path.join(MODELS_DIR, "tts")
+        models["tts_tok"] = VitsTokenizer(tts_dir)
+        models["tts"] = session(os.path.join(tts_dir, "tts.onnx"))
+        with open(os.path.join(tts_dir, "sampling_rate.txt")) as f:
+            models["tts_sr"] = int(f.read())
         log(f"TTS loaded in {time.time() - t:.1f}s")
 
         t = time.time()
-        models["stt_proc"] = AutoProcessor.from_pretrained(os.path.join(MODELS_DIR, STT_PROCESSOR_DIR))
-        # int8 weights prepared at build time (download_models.py).
-        models["stt"] = load_quantized(os.path.join(MODELS_DIR, STT_MODEL_DIR))
+        stt_dir = os.path.join(MODELS_DIR, "stt")
+        models["ctc"] = CtcProcessor(stt_dir)
+        models["stt"] = session(os.path.join(stt_dir, "stt_int8.onnx"))
         log(f"STT loaded in {time.time() - t:.1f}s")
-        state.update(ready=True, loaded_at=time.time())
+        state["ready"] = True
     except Exception as e:  # report on /health instead of crashing
         state["error"] = f"{type(e).__name__}: {e}"
         log(f"model load failed: {state['error']}")
@@ -75,11 +82,11 @@ MAX_CHUNK_CHARS = 300
 
 def tts_chunks(text):
     """Splits text into speakable chunks of characters the model knows."""
-    vocab = models["tts_vocab"]
+    tok = models["tts_tok"]
     chunks = []
     for sentence in SENTENCE_SPLIT.split(text):
         # Keep only characters in the model's vocabulary (Tibetan letters, tsheg, space).
-        cleaned = re.sub(r"\s+", " ", "".join(ch if ch in vocab else " " for ch in sentence)).strip(" ་")
+        cleaned = re.sub(r"\s+", " ", "".join(ch if tok.known(ch) else " " for ch in sentence)).strip(" ་")
         while len(cleaned) > MAX_CHUNK_CHARS:  # split long runs at a syllable boundary
             cut = cleaned.rfind("་", 0, MAX_CHUNK_CHARS)
             cut = cut if cut > 0 else MAX_CHUNK_CHARS
@@ -94,13 +101,13 @@ def synthesize(text):
     chunks = tts_chunks(text)
     if not chunks:
         raise ValueError("no speakable Tibetan text")
-    sr = models["tts"].config.sampling_rate
+    sr = models["tts_sr"]
     pause = np.zeros(int(sr * 0.25), dtype=np.float32)
     parts = []
-    with lock, torch.no_grad():
+    with lock:
         for chunk in chunks:
-            inputs = models["tts_tok"](chunk, return_tensors="pt")
-            parts += [models["tts"](**inputs).waveform[0].numpy(), pause]
+            ids = models["tts_tok"].encode(chunk)
+            parts += [models["tts"].run(None, {"input_ids": ids})[0][0], pause]
     return to_wav(np.concatenate(parts[:-1]), sr)
 
 
@@ -129,17 +136,16 @@ def transcribe(data):
     audio = read_wav(data)
     if len(audio) > MAX_AUDIO_SECONDS * SAMPLE_RATE:
         raise ValueError(f"audio longer than {MAX_AUDIO_SECONDS}s")
-    proc, model = models["stt_proc"], models["stt"]
+    ctc, model = models["ctc"], models["stt"]
     step = STT_CHUNK_SECONDS * SAMPLE_RATE
     texts = []
-    with lock, torch.no_grad():
+    with lock:
         for start in range(0, max(len(audio), 1), step):
             piece = audio[start : start + step]
             if len(piece) < SAMPLE_RATE // 4:  # skip slivers under 0.25s
                 continue
-            inputs = proc(piece, sampling_rate=SAMPLE_RATE, return_tensors="pt")
-            ids = model(**inputs).logits.argmax(-1)[0]
-            texts.append(proc.decode(ids).strip())
+            logits = model.run(None, {"input_values": ctc.features(piece)})[0][0]
+            texts.append(ctc.decode(logits))
     return " ".join(t for t in texts if t)
 
 

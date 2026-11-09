@@ -97,7 +97,9 @@ Ask for a spoken answer in your own words, by text or in a voice message ("reply
 Tinfoil's hosted speech models don't handle Tibetan, so `speech/` is a small CPU-only service running Meta's MMS models, deployed as a second container in the same enclave:
 
 - **Text-to-speech:** `facebook/mms-tts-bod`. Voice replies written mostly in Tibetan script are spoken with it; other languages still use `TINFOIL_TTS_MODEL`.
-- **Speech-to-text:** `facebook/mms-1b-all` with its Tibetan adapter, quantized to int8 at build time. Each voice note is transcribed by both the general model and this one in parallel, and the chat model gets both transcripts and uses whichever makes sense.
+- **Speech-to-text:** `facebook/mms-1b-all` with its Tibetan adapter, exported to ONNX and quantized to int8 at build time. Each voice note is transcribed by both the general model and this one in parallel, and the chat model gets both transcripts and uses whichever makes sense.
+
+Both models are exported to ONNX at image build time (`speech/build_models.py`, which also self-tests the conversion), so the running image needs only ONNX Runtime and NumPy, not PyTorch. That matters because inside a Tinfoil enclave with less than 32 GB of memory, **all container images share a fixed 4 GB ramdisk**, counting both their compressed and unpacked size. For the same reason the bot image uses a static `ffmpeg` binary instead of Debian's package.
 
 Set `SPEECH_URL` to enable it (`http://speech:8000` in the container). If the sidecar is down, the bot falls back to the hosted models. `/health` shows its state as `speechSidecar`.
 

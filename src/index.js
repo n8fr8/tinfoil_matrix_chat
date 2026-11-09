@@ -116,9 +116,20 @@ async function startBot(status, startedAt) {
     // Record successful syncs for the status endpoint.
     const doSync = client.doSync.bind(client);
     client.doSync = async (...args) => {
-        const res = await doSync(...args);
-        status.lastSyncAt = Date.now();
-        return res;
+        try {
+            const res = await doSync(...args);
+            status.lastSyncAt = Date.now();
+            return res;
+        } catch (err) {
+            // Our device/token was removed (e.g. by another copy of the bot). Exit so
+            // the container restarts and logs in fresh, instead of failing forever.
+            if (err?.body?.errcode === "M_UNKNOWN_TOKEN" && !err.body.soft_logout) {
+                LogService.error("melong", "Access token is no longer valid; exiting so the bot restarts and logs in again");
+                await fs.rm(config.credentialsPath, { force: true }).catch(() => {});
+                process.exit(1);
+            }
+            throw err;
+        }
     };
     if (config.autojoin) setupAutojoin(client);
 

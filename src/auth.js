@@ -68,14 +68,21 @@ export async function resolveCredentials(config) {
     return { ...creds, source: "login" };
 }
 
+const STALE_DEVICE_MS = 15 * 60 * 1000;
+
 // Deletes this account's other devices that share our device name (left over
 // from previous logins whose storage was lost). Needs the password because the
 // homeserver requires re-authentication to delete devices. Never fatal.
 async function deleteOldDevices(client, config, currentDeviceId) {
     try {
         const { devices = [] } = await client.doRequest("GET", "/_matrix/client/v3/devices");
+        // Only devices the homeserver hasn't seen recently. A copy of the bot that
+        // is still running (e.g. the old instance during a blue-green update)
+        // keeps syncing, so its device stays; leftovers are removed on a later login.
+        const idleSince = Date.now() - STALE_DEVICE_MS;
         const stale = devices
             .filter((d) => d.device_id !== currentDeviceId && d.display_name === config.deviceName)
+            .filter((d) => !d.last_seen_ts || d.last_seen_ts < idleSince)
             .map((d) => d.device_id);
         if (!stale.length) return;
 
