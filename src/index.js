@@ -299,17 +299,17 @@ async function respond(client, chat, roomId, event, text, attachmentContents) {
         const attachments = [];
         for (const c of attachmentContents) attachments.push(await downloadAttachment(client, c));
         const reply = await chat.chat(roomId, text, attachments);
+        // Plain Markdown stays in `body` as a fallback; clients render the HTML.
+        // Voice replies get this text message too, then the voice message.
+        await client.sendMessage(roomId, RichReply.createFor(roomId, event, reply.text, markdownToMatrixHtml(reply.text)));
         if (reply.voice) {
             try {
                 await sendVoiceReply(client, chat, roomId, event, reply.text);
-                return;
             } catch (err) {
-                // Fall back to a text reply if speech synthesis/upload fails.
                 LogService.error("melong", "Voice reply failed:", err?.message || err);
+                await client.replyNotice(roomId, event, `(Couldn't create the voice version: ${err?.message || err})`);
             }
         }
-        // Plain Markdown stays in `body` as a fallback; clients render the HTML.
-        await client.sendMessage(roomId, RichReply.createFor(roomId, event, reply.text, markdownToMatrixHtml(reply.text)));
     } catch (err) {
         LogService.error("melong", "Chat request failed:", err?.message || err);
         await client.replyNotice(roomId, event, `Sorry, something went wrong: ${err?.message || err}`);

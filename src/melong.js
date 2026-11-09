@@ -53,6 +53,14 @@ const VOICE_INSTRUCTIONS =
     `spoken text: no Markdown, lists, tables, code, emoji, or URLs, and keep it ` +
     `reasonably short. Never use the tag otherwise.`;
 
+// Added when the user's message was itself a voice message / audio: the reply
+// is always spoken (and also sent as text).
+const SPOKEN_INPUT_INSTRUCTIONS =
+    `\n\nThe user's latest message is a voice message, so your reply will be ` +
+    `sent as a voice message too, in the language the user spoke unless they ask ` +
+    `otherwise. Write it as natural spoken text: no Markdown, lists, tables, code, ` +
+    `emoji, or URLs, and keep it reasonably short.`;
+
 // Added when the Tibetan speech sidecar is enabled, depending on SPEECH_STT.
 const TIBETAN_REPLY_RULE =
     ` When writing a spoken reply in Tibetan, write numbers as words and use only Tibetan script.`;
@@ -193,7 +201,8 @@ export class ChatClient {
      * @param {string} text the user's message (may be empty if attachments are given)
      * @param {Array<{kind:string,data:Buffer,mimetype:string,filename:string}>} [attachments]
      * @param {{signal?: AbortSignal}} [opts]
-     * @returns {Promise<{text: string, voice: boolean}>} voice=true when the user asked for a spoken reply
+     * @returns {Promise<{text: string, voice: boolean}>} voice=true when the reply should be spoken:
+     *   the user sent audio, or asked for a spoken reply
      */
     async chat(conversationId, text, attachments = [], opts = {}) {
         const history = this.histories.get(conversationId) || [];
@@ -217,6 +226,11 @@ export class ChatClient {
         }
 
         const prompt = text || defaultPrompt(attachments);
+        const spokenInput = attachments.some((a) => a.kind === "audio");
+        const system =
+            this.systemPrompt +
+            (spokenInput ? SPOKEN_INPUT_INSTRUCTIONS : VOICE_INSTRUCTIONS) +
+            TIBETAN_SPEECH_INSTRUCTIONS[this.speechStt];
         const userMsg = parts.length
             ? { role: "user", content: [{ type: "text", text: prompt }, ...parts] }
             : { role: "user", content: prompt };
@@ -227,7 +241,7 @@ export class ChatClient {
             completion = await this.client.chat.completions.create(
                 {
                     model: this.model,
-                    messages: [{ role: "system", content: this.systemPrompt + VOICE_INSTRUCTIONS + TIBETAN_SPEECH_INSTRUCTIONS[this.speechStt] }, ...history, userMsg],
+                    messages: [{ role: "system", content: system }, ...history, userMsg],
                     max_tokens: this.maxNewTokens,
                 },
                 { timeout: this.timeoutMs, signal: opts.signal },
@@ -237,8 +251,9 @@ export class ChatClient {
         }
 
         let out = (completion?.choices?.[0]?.message?.content ?? "").toString().trim();
-        const voice = out.startsWith(VOICE_TAG);
-        if (voice) out = out.slice(VOICE_TAG.length).trim();
+        const tagged = out.startsWith(VOICE_TAG);
+        if (tagged) out = out.slice(VOICE_TAG.length).trim();
+        const voice = spokenInput || tagged;
         if (!out) throw new Error("Tinfoil returned an empty response: " + JSON.stringify(completion).slice(0, 300));
 
         // Remember this exchange (text-only), trimmed to the last N turns.

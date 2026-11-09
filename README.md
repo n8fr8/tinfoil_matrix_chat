@@ -13,7 +13,7 @@ Send the bot a message and it replies. It remembers recent messages in each room
 - Reply to every message, or only `!ai …`-prefixed commands.
 - Replies are rendered as rich text (bold, lists, code blocks, tables) in Matrix clients.
 - Understands attachments: images, documents (PDF, Word, PowerPoint, Excel, CSV, text), audio and voice messages, and the soundtrack of videos. See [Attachments](#attachments).
-- Replies with a voice message when asked ("answer with a voice message", "say it out loud"). See [Voice replies](#voice-replies).
+- Answers voice messages with a voice message (plus the text), and replies by voice when asked ("answer with a voice message", "say it out loud"). See [Voice replies](#voice-replies).
 - Remembers the last few exchanges per room (in memory; cleared on restart or with `!reset`).
 
 ## Requirements
@@ -90,7 +90,7 @@ Files are downloaded (and decrypted in encrypted rooms) by the bot, then sent to
 
 ### Voice replies
 
-Ask for a spoken answer in your own words, by text or in a voice message ("reply with a voice message", "read this aloud"). The model flags the request, writes its answer as plain spoken text, and the bot speaks it with Tinfoil text-to-speech. The answer arrives as a Matrix voice message (Ogg/Opus with a waveform), with the text as its caption. It is encrypted in encrypted rooms. If speech synthesis fails, the bot replies in text instead. Needs `ffmpeg`.
+A voice message (or any audio) always gets a spoken answer, in the language spoken. In text, ask for one in your own words ("reply with a voice message", "read this aloud"); the model flags the request. Either way the model writes its answer as plain spoken text, and the bot sends it twice: first as a normal text message, then as a Matrix voice message (Ogg/Opus with a waveform) spoken with text-to-speech. Both are encrypted in encrypted rooms. If speech synthesis fails, the text reply is followed by a short note saying so. Needs `ffmpeg`.
 
 ### Tibetan speech (optional sidecar)
 
