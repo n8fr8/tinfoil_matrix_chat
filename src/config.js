@@ -29,10 +29,14 @@ export function loadChatConfig(env = process.env) {
         ttsVoice: env.TINFOIL_TTS_VOICE || "neutral_female",
         // Tibetan speech sidecar (speech/), e.g. http://speech:8000. Empty = off.
         speechUrl: (env.SPEECH_URL || "").trim(),
-        // Who transcribes voice notes when the sidecar is on: "tibetan" (the
-        // sidecar only), "both" (sidecar + transcriptionModel; the chat model
-        // picks) or "general" (transcriptionModel only).
-        speechStt: (env.SPEECH_STT || "tibetan").trim().toLowerCase(),
+        // Who transcribes voice notes when the sidecar is on: "auto" (Tibetan
+        // speech -> sidecar, other languages -> SPEECH_DETECT_MODEL), "tibetan"
+        // (sidecar only) or "general" (TINFOIL_TRANSCRIPTION_MODEL only).
+        speechStt: (env.SPEECH_STT || "auto").trim().toLowerCase(),
+        detectModel: env.SPEECH_DETECT_MODEL || "whisper-large-v3-turbo",
+        // Whisper confidence (mean log-probability) above which speech is
+        // treated as not Tibetan.
+        detectThreshold: env.SPEECH_DETECT_THRESHOLD ? Number(env.SPEECH_DETECT_THRESHOLD) : -0.45,
     };
 }
 

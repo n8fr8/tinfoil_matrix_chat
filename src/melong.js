@@ -64,19 +64,18 @@ const SPOKEN_INPUT_INSTRUCTIONS =
 // Added when the Tibetan speech sidecar is enabled, depending on SPEECH_STT.
 const TIBETAN_REPLY_RULE =
     ` When writing a spoken reply in Tibetan, write numbers as words and use only Tibetan script.`;
+const TIBETAN_TRANSCRIPT_NOTE =
+    `Its transcripts are in Tibetan script, with no punctuation and some ` +
+    `spelling errors: read them charitably, as spoken Tibetan.`;
 const TIBETAN_SPEECH_INSTRUCTIONS = {
+    auto:
+        `\n\nVoice messages and audio are transcribed automatically: Tibetan ` +
+        `speech by a Tibetan speech model, other languages by a general model. ` +
+        `Each transcript says which. ` + TIBETAN_TRANSCRIPT_NOTE + TIBETAN_REPLY_RULE,
     tibetan:
-        `\n\nVoice messages and audio are transcribed by a Tibetan speech model. Its ` +
-        `transcripts are in Tibetan script, with no punctuation and some spelling ` +
-        `errors: read them charitably, as spoken Tibetan. Reply to a voice message ` +
-        `in Tibetan unless the user asks for another language.` + TIBETAN_REPLY_RULE,
-    both:
-        `\n\nVoice messages may come with two transcripts: one from a general ` +
-        `multilingual speech model and one from a Tibetan-only speech model. The ` +
-        `Tibetan model always outputs Tibetan script, even for other languages, and ` +
-        `has no punctuation and some spelling errors. The general model often turns ` +
-        `Tibetan speech into romanized or invented words; if the Tibetan transcript ` +
-        `is plausible Tibetan, prefer it.` + TIBETAN_REPLY_RULE,
+        `\n\nVoice messages and audio are transcribed by a Tibetan speech model. ` +
+        TIBETAN_TRANSCRIPT_NOTE + ` Reply to a voice message in Tibetan unless the ` +
+        `user asks for another language.` + TIBETAN_REPLY_RULE,
     general: "",
 };
 const STT_MODES = Object.keys(TIBETAN_SPEECH_INSTRUCTIONS);
@@ -95,8 +94,12 @@ export class ChatClient {
         timeoutMs = 120000,
         client,
         speech = null, // SpeechSidecar for Tibetan TTS/STT (optional)
-        speechStt = "tibetan", // see TIBETAN_SPEECH_INSTRUCTIONS
+        speechStt = "auto", // see TIBETAN_SPEECH_INSTRUCTIONS
+        detectModel = "whisper-large-v3-turbo", // decides Tibetan vs other ("auto")
+        detectThreshold = -0.45,
     } = {}) {
+        this.detectModel = detectModel;
+        this.detectThreshold = detectThreshold;
         this.speech = speech;
         if (!STT_MODES.includes(speechStt)) throw new Error(`SPEECH_STT must be one of ${STT_MODES.join(", ")}`);
         this.speechStt = speech ? speechStt : "general";
@@ -117,8 +120,10 @@ export class ChatClient {
         this.histories.delete(conversationId);
     }
 
-    // Speech-to-text. Converts to MP3 first unless it already is MP3/WAV.
-    async transcribe({ data, mimetype, filename, kind }) {
+    // Speech-to-text with Tinfoil. Converts to MP3 first unless it already is
+    // MP3/WAV. Returns the text, or with `verbose` the full result (language,
+    // per-segment confidence).
+    async transcribe({ data, mimetype, filename, kind }, { model = this.transcriptionModel, verbose = false } = {}) {
         let audio = data;
         let name = filename;
         let type = mimetype;
@@ -129,37 +134,48 @@ export class ChatClient {
         }
         try {
             const result = await this.client.audio.transcriptions.create(
-                { model: this.transcriptionModel, file: new File([audio], name, { type }) },
+                { model, file: new File([audio], name, { type }), ...(verbose ? { response_format: "verbose_json" } : {}) },
                 { timeout: this.timeoutMs },
             );
-            return (result?.text ?? "").trim();
+            return verbose ? result : (result?.text ?? "").trim();
         } catch (err) {
             throw new Error(`Tinfoil transcription failed: ${describeError(err)}`);
         }
     }
 
-    // Transcript block(s) for an audio/video attachment, from the Tibetan
-    // sidecar, the general model, or both in parallel (SPEECH_STT).
+    // Transcript block for an audio/video attachment (SPEECH_STT):
+    //   general  Tinfoil's transcription model only
+    //   tibetan  the Tibetan sidecar only
+    //   auto     Whisper and the sidecar in parallel. Whisper can't transcribe
+    //            Tibetan, and on Tibetan speech it returns nothing or
+    //            low-confidence gibberish; when it's confident, the speech
+    //            isn't Tibetan and its transcript is used. Otherwise the
+    //            Tibetan one is. (Calibrated on real speech: Tibetan scored
+    //            <= -0.58 or empty; en/fr/hi/zh/ne >= -0.33.)
     async transcribeForModel(a) {
         const header = `[Transcript of ${a.kind} "${a.filename}"`;
         const show = (t) => t || "(no speech detected)";
-        if (this.speechStt === "general") return `${header}]:\n${show(await this.transcribe(a))}`;
-        if (this.speechStt === "tibetan") {
+        const tibetan = async () => {
             try {
-                return `${header}, Tibetan speech model]:\n${show(await this.speech.stt(a.data))}`;
+                return await this.speech.stt(a.data);
             } catch (err) {
                 throw new Error(`Tibetan transcription failed: ${err?.message || err}`);
             }
+        };
+        if (this.speechStt === "general") return `${header}]:\n${show(await this.transcribe(a))}`;
+        if (this.speechStt === "tibetan") return `${header}, Tibetan speech model]:\n${show(await tibetan())}`;
+
+        const [whisper, bod] = await Promise.allSettled([this.transcribe(a, { model: this.detectModel, verbose: true }), tibetan()]);
+        const w = whisper.status === "fulfilled" ? whisperSummary(whisper.value) : null;
+        const general = w && w.text && w.score >= this.detectThreshold;
+        LogService.info("melong", `Speech detection: ${w ? `language=${w.language} score=${w.score.toFixed(2)}` : "whisper failed"} -> ${general ? "general" : "Tibetan"}`);
+        if (general) return `${header}, general model, language: ${w.language || "unknown"}]:\n${w.text}`;
+        if (bod.status === "fulfilled") return `${header}, Tibetan speech model]:\n${show(bod.value)}`;
+        if (w?.text) {
+            LogService.warn("melong", bod.reason?.message);
+            return `${header}, general model (low confidence), language: ${w.language || "unknown"}]:\n${w.text}`;
         }
-        const [general, tibetan] = await Promise.allSettled([this.transcribe(a), this.speech.stt(a.data)]);
-        if (general.status === "rejected" && tibetan.status === "rejected") throw general.reason;
-        if (tibetan.status === "rejected") LogService.warn("melong", `Tibetan transcription failed: ${tibetan.reason?.message}`);
-        if (general.status === "rejected") LogService.warn("melong", `General transcription failed: ${general.reason?.message}`);
-        const result = (r) => (r.status === "fulfilled" ? show(r.value) : "(unavailable)");
-        return (
-            `${header}, general multilingual model]:\n${result(general)}\n` +
-            `${header}, Tibetan speech model]:\n${result(tibetan)}`
-        );
+        throw bod.reason;
     }
 
     // Text-to-speech. Returns the audio bytes (WAV). With the speech sidecar,
@@ -285,4 +301,14 @@ function defaultPrompt(attachments) {
         if (kinds.has("file")) return "Summarise this document.";
     }
     return "Describe and summarise what I've shared.";
+}
+
+// Text, language and duration-weighted mean log-probability (0 = certain)
+// from a verbose_json transcription.
+function whisperSummary(result) {
+    const segments = result?.segments || [];
+    const weight = (seg) => Math.max(seg.end - seg.start, 0.01);
+    const total = segments.reduce((sum, seg) => sum + weight(seg), 0);
+    const score = total ? segments.reduce((sum, seg) => sum + seg.avg_logprob * weight(seg), 0) / total : -Infinity;
+    return { text: (result?.text ?? "").trim(), language: result?.language, score };
 }

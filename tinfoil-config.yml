@@ -58,7 +58,7 @@ containers:
       - TINFOIL_TTS_VOICE: "neutral_female"
       - HEALTH_PORT: "8080"
       - SPEECH_URL: "http://speech:8000"
-      - SPEECH_STT: "tibetan"
+      - SPEECH_STT: "auto"
       # Values for these bare names are set per instance when deploying.
       - MATRIX_USERNAME
       - MATRIX_DISPLAY_NAME
