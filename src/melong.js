@@ -84,14 +84,14 @@ const TRANSCRIBABLE = new Set(["audio/mpeg", "audio/mp3", "audio/wav", "audio/x-
 
 export class ChatClient {
     constructor({
-        model = "gemma4-31b",
+        model = "kimi-k3",
         transcriptionModel = "voxtral-small-24b",
         ttsModel = "voxtral-tts",
         ttsVoice = "neutral_female",
-        maxNewTokens = 2048,
+        maxNewTokens = 16000,
         systemPrompt,
         historyTurns = 10,
-        timeoutMs = 120000,
+        timeoutMs = 300000,
         client,
         speech = null, // SpeechSidecar for Tibetan TTS/STT (optional)
         speechStt = "auto", // see TIBETAN_SPEECH_INSTRUCTIONS
@@ -270,6 +270,9 @@ export class ChatClient {
         const tagged = out.startsWith(VOICE_TAG);
         if (tagged) out = out.slice(VOICE_TAG.length).trim();
         const voice = spokenInput || tagged;
+        if (!out && completion?.choices?.[0]?.finish_reason === "length") {
+            throw new Error(`the model used its whole ${this.maxNewTokens}-token budget thinking and wrote no answer; try a simpler or shorter request (or raise CHAT_MAX_NEW_TOKENS)`);
+        }
         if (!out) throw new Error("Tinfoil returned an empty response: " + JSON.stringify(completion).slice(0, 300));
 
         // Remember this exchange (text-only), trimmed to the last N turns.

@@ -13,14 +13,16 @@ function bool(value, fallback) {
 export function loadChatConfig(env = process.env) {
     return {
         // Model ID from https://docs.tinfoil.sh/models/overview
-        model: env.TINFOIL_MODEL || "gemma4-31b",
+        model: env.TINFOIL_MODEL || "kimi-k3",
         // Leave room for the model's thinking + the answer.
-        maxNewTokens: env.CHAT_MAX_NEW_TOKENS ? Number(env.CHAT_MAX_NEW_TOKENS) : 2048,
+        // Includes the model's reasoning ("thinking") tokens: kimi-k3 can use
+        // ~1,500 thinking a Tibetan answer through, and more on hard requests.
+        maxNewTokens: env.CHAT_MAX_NEW_TOKENS ? Number(env.CHAT_MAX_NEW_TOKENS) : 16000,
         // Optional override for the bot's personality / instructions.
         systemPrompt: env.CHAT_SYSTEM_PROMPT || "",
         // How many past exchanges to remember per room (0 = no memory).
         historyTurns: env.CHAT_HISTORY_TURNS ? Number(env.CHAT_HISTORY_TURNS) : 10,
-        timeoutMs: env.CHAT_TIMEOUT_MS ? Number(env.CHAT_TIMEOUT_MS) : 120000,
+        timeoutMs: env.CHAT_TIMEOUT_MS ? Number(env.CHAT_TIMEOUT_MS) : 300000,
         // Speech-to-text model used for audio attachments and voice messages.
         transcriptionModel: env.TINFOIL_TRANSCRIPTION_MODEL || "voxtral-small-24b",
         // Text-to-speech for voice replies. The voice must belong to the model

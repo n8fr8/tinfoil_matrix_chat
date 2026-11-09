@@ -1,6 +1,6 @@
 # Tinfoil Matrix Bot
 
-A [Matrix](https://matrix.org) chat bot, built on [`matrix-bot-sdk`](https://turt2live.github.io/matrix-bot-sdk/), that answers questions and chats about any topic using [Tinfoil](https://tinfoil.sh) private inference (default model `gemma4-31b`). Tinfoil runs models inside secure hardware enclaves, and its SDK verifies enclave attestation on every connection.
+A [Matrix](https://matrix.org) chat bot, built on [`matrix-bot-sdk`](https://turt2live.github.io/matrix-bot-sdk/), that answers questions and chats about any topic using [Tinfoil](https://tinfoil.sh) private inference (default model `kimi-k3`). Tinfoil runs models inside secure hardware enclaves, and its SDK verifies enclave attestation on every connection.
 
 Send the bot a message and it replies. It remembers recent messages in each room, so you can have a back-and-forth conversation. Send `!reset` to make it forget the room's history.
 
@@ -65,11 +65,11 @@ All settings come from environment variables (loaded from `.env`). See [`.env.ex
 | `MATRIX_AUTOJOIN` | `true` | Auto-join on invite. |
 | `MATRIX_COMMAND_PREFIX` | _(empty)_ | If set, only reply to messages starting with this. |
 | `TINFOIL_API_KEY` | — | Tinfoil API key (read by the SDK automatically). |
-| `TINFOIL_MODEL` | `gemma4-31b` | Model ID from the [Tinfoil catalog](https://docs.tinfoil.sh/models/overview). |
+| `TINFOIL_MODEL` | `kimi-k3` | Model ID from the [Tinfoil catalog](https://docs.tinfoil.sh/models/overview). `kimi-k3` writes clean Tibetan; `gemma4-31b` (the previous default) is faster but mixes other scripts into Tibetan replies. See [docs/tibetan-speech-models.md](docs/tibetan-speech-models.md#reply-model-llm). |
 | `CHAT_SYSTEM_PROMPT` | _friendly general assistant_ | The bot's personality / instructions. |
 | `CHAT_HISTORY_TURNS` | `10` | Past exchanges remembered per room (`0` = none). |
-| `CHAT_MAX_NEW_TOKENS` | `2048` | Reply length cap (includes reasoning tokens). |
-| `CHAT_TIMEOUT_MS` | `120000` | Request timeout. |
+| `CHAT_MAX_NEW_TOKENS` | `16000` | Reply length cap, including the model's reasoning ("thinking") tokens. |
+| `CHAT_TIMEOUT_MS` | `300000` | Request timeout (thinking models can take a minute or more). |
 | `TINFOIL_TRANSCRIPTION_MODEL` | `voxtral-small-24b` | Speech-to-text model for audio and video. |
 | `CHAT_MAX_ATTACHMENT_MB` | `25` | Larger attachments are refused. |
 | `TINFOIL_TTS_MODEL` | `voxtral-tts` | Text-to-speech model for voice replies (`qwen3-tts` is the lower-latency alternative). |
@@ -79,7 +79,7 @@ All settings come from environment variables (loaded from `.env`). See [`.env.ex
 
 | You send | What happens |
 | --- | --- |
-| Image | Sent to the model (`gemma4-31b` can see images). |
+| Image | Sent to the model (`kimi-k3` and `gemma4-31b` can see images). |
 | Document (PDF, DOCX, PPTX, XLSX, CSV, text…) | Sent to Tinfoil, which converts it inside the enclave and passes it to the model. |
 | Audio / voice message | Transcribed with the speech-to-text model; the transcript goes to the model. |
 | Video | Its audio track is transcribed (frames are not analysed). |

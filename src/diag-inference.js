@@ -8,7 +8,7 @@
 
 import { createTinfoilClient } from "./melong.js";
 
-const MODEL = () => process.env.TINFOIL_MODEL || "gemma4-31b";
+const MODEL = () => process.env.TINFOIL_MODEL || "kimi-k3";
 const STEP_TIMEOUT_MS = 45000;
 
 async function step(name, fn) {

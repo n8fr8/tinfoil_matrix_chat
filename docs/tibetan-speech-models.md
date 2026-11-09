@@ -12,7 +12,7 @@ Work done November 2026 for the Melong Matrix bot prototype.
 | Tibetan text-to-speech | `facebook/mms-tts-bod` (ONNX in the sidecar) | The only usable open Tibetan TTS model found; fast on CPU |
 | Other languages, speech-to-text | Tinfoil's hosted `whisper-large-v3-turbo` | Good transcripts, and its confidence score tells Tibetan apart from other languages |
 | Tibetan vs other language routing | Whisper's confidence, threshold −0.45 | 58 of 59 real clips routed correctly |
-| Chat / reply model | `gemma4-31b` (unchanged for now) | See [reply model](#reply-model-llm) for its weaknesses in Tibetan |
+| Chat / reply model | Tinfoil's hosted `kimi-k3` (was `gemma4-31b`) | Writes clean Tibetan script; Gemma mixed in other scripts. Slower (~30 s for a Tibetan answer) |
 
 ## Constraints
 
@@ -145,8 +145,24 @@ above to English, from the clean reference text and from MMS transcripts, and
   Tibetan script; DeepSeek was fastest (3–5 s). Fluency has not been judged by
   a native speaker.
 
-Possible next step: try DeepSeek V4.1 Flash or Kimi K3 as the reply model (with
-a larger token limit), after checking them as general chat models.
+**Decision: `kimi-k3`.** Checked as a general chat model before switching: chat
+6–8 s, image description 7 s, document summary 9 s, a Tibetan question ~30 s
+(about 1,500 tokens, mostly reasoning). Because reasoning counts against the
+token limit, `CHAT_MAX_NEW_TOKENS` went from 2,048 to 16,000 and the request
+timeout to 5 minutes. End to end, the real voice note "What do you need? I'll
+get it for you" got a sensible reply in clean Tibetan (36 s in total).
+`reasoning_effort: "low"` is accepted but did not make Tibetan answers faster.
+
+### Monlam Melong (not used yet)
+
+`TenzinGayche/Monlam_Melong_preview` is Monlam AI's Tibetan LLM: Gemma 2 9B
+fine-tuned from `buddhist-nlp/gemma2-mitra-base`, 18.5 GB in bf16, license
+"to be added". Tinfoil doesn't host it. Running it ourselves is possible: Tinfoil
+can package pinned Hugging Face weights (`tinfoil model wrap`) for a GPU enclave
+running vLLM (1 GPU, ~16 CPUs, 64 GB in Tinfoil's example), but a GPU instance
+is too expensive for this prototype. A 9B model on CPU would need a larger CPU
+instance and would be slow, since Tibetan text uses many tokens. Asking Tinfoil
+to host it is the cheapest route if its Tibetan proves better.
 
 ## Reproducing
 

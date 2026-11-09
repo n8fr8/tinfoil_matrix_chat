@@ -55,6 +55,7 @@ async function main() {
                 started: status.started,
                 secondsSinceLastSync: syncAge === null ? null : Math.round(syncAge / 1000),
                 uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
+                model: process.env.TINFOIL_MODEL || "kimi-k3",
                 ...(status.speechStatus ? { speechSidecar: status.speechStatus } : {}),
                 ...(status.error ? { error: status.error } : {}),
             };
@@ -294,7 +295,10 @@ async function handleAttachments(client, chat, config, roomId, event, items) {
 }
 
 async function respond(client, chat, roomId, event, text, attachmentContents) {
-    await client.setTyping(roomId, true, 60000).catch(() => {});
+    // Thinking models can take a minute or more: keep the typing notice alive.
+    const typing = () => client.setTyping(roomId, true, 60000).catch(() => {});
+    typing();
+    const keepTyping = setInterval(typing, 45000);
     try {
         const attachments = [];
         for (const c of attachmentContents) attachments.push(await downloadAttachment(client, c));
@@ -314,6 +318,7 @@ async function respond(client, chat, roomId, event, text, attachmentContents) {
         LogService.error("melong", "Chat request failed:", err?.message || err);
         await client.replyNotice(roomId, event, `Sorry, something went wrong: ${err?.message || err}`);
     } finally {
+        clearInterval(keepTyping);
         await client.setTyping(roomId, false).catch(() => {});
     }
 }
