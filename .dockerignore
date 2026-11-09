@@ -8,3 +8,4 @@ node_modules
 *.log
 tinfoil-config.yml
 README.md
+speech

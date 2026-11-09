@@ -117,6 +117,27 @@ export function toMp3(data) {
     return ffmpeg(["-vn", "-ac", "1", "-ar", "16000", "-f", "mp3"], data);
 }
 
+// 16 kHz mono 16-bit WAV, the input format of the Tibetan speech sidecar.
+// ffmpeg writes raw samples (a WAV written to a pipe has no valid length
+// field), and we add the 44-byte header ourselves.
+export async function toWav16kMono(data) {
+    const pcm = await ffmpeg(["-vn", "-ac", "1", "-ar", "16000", "-f", "s16le"], data);
+    const h = Buffer.alloc(44);
+    h.write("RIFF", 0);
+    h.writeUInt32LE(36 + pcm.length, 4);
+    h.write("WAVEfmt ", 8);
+    h.writeUInt32LE(16, 16); // fmt chunk size
+    h.writeUInt16LE(1, 20); // PCM
+    h.writeUInt16LE(1, 22); // mono
+    h.writeUInt32LE(16000, 24); // sample rate
+    h.writeUInt32LE(16000 * 2, 28); // byte rate
+    h.writeUInt16LE(2, 32); // block align
+    h.writeUInt16LE(16, 34); // bits per sample
+    h.write("data", 36);
+    h.writeUInt32LE(pcm.length, 40);
+    return Buffer.concat([h, pcm]);
+}
+
 // Turns synthesized speech into a Matrix voice message: Ogg/Opus audio plus
 // the duration and waveform that clients use to draw the voice-message player.
 export async function toVoiceMessage(audio) {

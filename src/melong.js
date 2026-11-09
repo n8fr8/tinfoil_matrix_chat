@@ -17,6 +17,8 @@
 
 import { TinfoilAI } from "tinfoil";
 import { toMp3 } from "./media.js";
+import { isMostlyTibetan } from "./speech.js";
+import { LogService } from "matrix-bot-sdk";
 
 // Builds the Tinfoil SDK client. By default the SDK asks Tinfoil's attestation
 // service for a router and gets a random one (e.g. router-0.tinfoil.sh or
@@ -51,6 +53,15 @@ const VOICE_INSTRUCTIONS =
     `spoken text: no Markdown, lists, tables, code, emoji, or URLs, and keep it ` +
     `reasonably short. Never use the tag otherwise.`;
 
+// Added when the Tibetan speech sidecar is enabled.
+const TIBETAN_SPEECH_INSTRUCTIONS =
+    `\n\nVoice messages may come with two transcripts: one from a general ` +
+    `multilingual speech model and one from a Tibetan-only speech model. The ` +
+    `Tibetan model always outputs Tibetan script, even for other languages, and ` +
+    `has no punctuation and some spelling errors. Use whichever transcript is ` +
+    `coherent. When writing a spoken reply in Tibetan, write numbers as words and ` +
+    `use only Tibetan script.`;
+
 const TRANSCRIBABLE = new Set(["audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/wave"]);
 
 export class ChatClient {
@@ -64,7 +75,9 @@ export class ChatClient {
         historyTurns = 10,
         timeoutMs = 120000,
         client,
+        speech = null, // SpeechSidecar for Tibetan TTS/STT (optional)
     } = {}) {
+        this.speech = speech;
         this.model = model;
         this.transcriptionModel = transcriptionModel;
         this.ttsModel = ttsModel;
@@ -103,8 +116,35 @@ export class ChatClient {
         }
     }
 
-    // Text-to-speech. Returns the audio bytes (WAV).
+    // Transcript block(s) for an audio/video attachment. With the Tibetan
+    // sidecar, runs both models in parallel and labels each transcript.
+    async transcribeForModel(a) {
+        const header = `[Transcript of ${a.kind} "${a.filename}"`;
+        if (!this.speech) {
+            const transcript = await this.transcribe(a);
+            return `${header}]:\n${transcript || "(no speech detected)"}`;
+        }
+        const [general, tibetan] = await Promise.allSettled([this.transcribe(a), this.speech.stt(a.data)]);
+        if (general.status === "rejected" && tibetan.status === "rejected") throw general.reason;
+        if (tibetan.status === "rejected") LogService.warn("melong", `Tibetan transcription failed: ${tibetan.reason?.message}`);
+        if (general.status === "rejected") LogService.warn("melong", `General transcription failed: ${general.reason?.message}`);
+        const show = (r) => (r.status === "fulfilled" ? r.value || "(no speech detected)" : "(unavailable)");
+        return (
+            `${header}, general multilingual model]:\n${show(general)}\n` +
+            `${header}, Tibetan speech model]:\n${show(tibetan)}`
+        );
+    }
+
+    // Text-to-speech. Returns the audio bytes (WAV). Tibetan text goes to the
+    // speech sidecar when it's enabled; everything else to Tinfoil.
     async speak(text) {
+        if (this.speech && isMostlyTibetan(text)) {
+            try {
+                return await this.speech.tts(text);
+            } catch (err) {
+                throw new Error(`Tibetan text-to-speech failed: ${err?.message || err}`);
+            }
+        }
         try {
             const res = await this.client.audio.speech.create(
                 { model: this.ttsModel, voice: this.ttsVoice, input: text },
@@ -136,8 +176,7 @@ export class ChatClient {
                 parts.push({ type: "image_url", image_url: { url: dataUrl(a) } });
                 notes.push(`[Shared an image: ${a.filename}]`);
             } else if (a.kind === "audio" || a.kind === "video") {
-                const transcript = await this.transcribe(a);
-                const t = `[Transcript of ${a.kind} "${a.filename}"]:\n${transcript || "(no speech detected)"}`;
+                const t = await this.transcribeForModel(a);
                 parts.push({ type: "text", text: t });
                 notes.push(t);
             } else {
@@ -157,7 +196,7 @@ export class ChatClient {
             completion = await this.client.chat.completions.create(
                 {
                     model: this.model,
-                    messages: [{ role: "system", content: this.systemPrompt + VOICE_INSTRUCTIONS }, ...history, userMsg],
+                    messages: [{ role: "system", content: this.systemPrompt + VOICE_INSTRUCTIONS + (this.speech ? TIBETAN_SPEECH_INSTRUCTIONS : "") }, ...history, userMsg],
                     max_tokens: this.maxNewTokens,
                 },
                 { timeout: this.timeoutMs, signal: opts.signal },

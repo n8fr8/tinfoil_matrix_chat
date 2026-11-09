@@ -27,6 +27,8 @@ export function loadChatConfig(env = process.env) {
         // (see .env.example for both models' voice lists).
         ttsModel: env.TINFOIL_TTS_MODEL || "voxtral-tts",
         ttsVoice: env.TINFOIL_TTS_VOICE || "neutral_female",
+        // Tibetan speech sidecar (speech/), e.g. http://speech:8000. Empty = off.
+        speechUrl: (env.SPEECH_URL || "").trim(),
     };
 }
 

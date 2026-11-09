@@ -1,4 +1,4 @@
-# Melong Matrix Bot
+# Tinfoil Matrix Bot
 
 A [Matrix](https://matrix.org) chat bot, built on [`matrix-bot-sdk`](https://turt2live.github.io/matrix-bot-sdk/), that answers questions and chats about any topic using [Tinfoil](https://tinfoil.sh) private inference (default model `gemma4-31b`). Tinfoil runs models inside secure hardware enclaves, and its SDK verifies enclave attestation on every connection.
 
@@ -92,6 +92,17 @@ Files are downloaded (and decrypted in encrypted rooms) by the bot, then sent to
 
 Ask for a spoken answer in your own words, by text or in a voice message ("reply with a voice message", "read this aloud"). The model flags the request, writes its answer as plain spoken text, and the bot speaks it with Tinfoil text-to-speech. The answer arrives as a Matrix voice message (Ogg/Opus with a waveform), with the text as its caption. It is encrypted in encrypted rooms. If speech synthesis fails, the bot replies in text instead. Needs `ffmpeg`.
 
+### Tibetan speech (optional sidecar)
+
+Tinfoil's hosted speech models don't handle Tibetan, so `speech/` is a small CPU-only service running Meta's MMS models, deployed as a second container in the same enclave:
+
+- **Text-to-speech:** `facebook/mms-tts-bod`. Voice replies written mostly in Tibetan script are spoken with it; other languages still use `TINFOIL_TTS_MODEL`.
+- **Speech-to-text:** `facebook/mms-1b-all` with its Tibetan adapter, quantized to int8 at build time. Each voice note is transcribed by both the general model and this one in parallel, and the chat model gets both transcripts and uses whichever makes sense.
+
+Set `SPEECH_URL` to enable it (`http://speech:8000` in the container). If the sidecar is down, the bot falls back to the hosted models. `/health` shows its state as `speechSidecar`.
+
+Both models are licensed **CC-BY-NC 4.0**: non-commercial use only, with attribution to Meta's MMS project.
+
 ### Testing the connection
 
 `npm run probe` sends one test message through Tinfoil and prints the reply (`npm run probe "Tell me about Mars"` for a custom message).
@@ -136,6 +147,8 @@ src/
   media.js   attachment download/decrypt + ffmpeg audio conversion
   format.js  Markdown -> Matrix HTML for replies
   health.js  HTTP status endpoint (for containers)
+  speech.js  client for the Tibetan speech sidecar
+speech/      Tibetan TTS/STT sidecar (Python, MMS models)
   login.js   one-off: print an access token
 ```
 

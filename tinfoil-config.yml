@@ -10,7 +10,9 @@
 
 cvm-version: 0.14.12
 cpus: 2
-memory: 8192
+# 16 GB: the speech sidecar uses ~3 GB at runtime, the bot ~0.5 GB, and the
+# container images themselves may be held in memory inside the enclave.
+memory: 16384
 
 networks:
   # Outbound access is blocked by default. Allow only what the bot needs.
@@ -25,6 +27,8 @@ networks:
       - atc.tinfoil.sh            # Tinfoil attestation verification
       - github-proxy.tinfoil.sh   # attestation fallbacks used by the Tinfoil SDK
       - kds-proxy.tinfoil.sh
+  # Bot <-> speech sidecar only. No internet access.
+  internal: {}
 
 containers:
   - name: "melong-bot"
@@ -35,7 +39,7 @@ containers:
     # container still has no Linux capabilities, a read-only root filesystem,
     # and no-new-privileges.
     user: "0:0"
-    networks: [egress]
+    networks: [egress, internal]
     # Root filesystem is read-only; runtime state goes in memory and is wiped on
     # restart. Each start therefore logs in with the password as a new Matrix
     # device and removes the previous one (MATRIX_CLEANUP_OLD_DEVICES).
@@ -53,6 +57,7 @@ containers:
       - TINFOIL_TTS_MODEL: "voxtral-tts"
       - TINFOIL_TTS_VOICE: "neutral_female"
       - HEALTH_PORT: "8080"
+      - SPEECH_URL: "http://speech:8000"
       # Values for these bare names are set per instance when deploying.
       - MATRIX_USERNAME
       - MATRIX_DISPLAY_NAME
@@ -66,6 +71,23 @@ containers:
       timeout: 5s
       retries: 3
       start_period: 2m
+
+  # Tibetan speech sidecar: MMS text-to-speech + speech-to-text on CPU.
+  # Weights are baked into the image (pinned revisions; models are CC-BY-NC 4.0).
+  - name: "speech"
+    image: "ghcr.io/n8fr8/tinfoil_matrix_chat-speech:placeholder"
+    restart: always
+    networks: [internal]
+    tmpfs:
+      /tmp: "size=256m"
+    env:
+      - TORCH_THREADS: "2"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5m
 
 # Public HTTPS entry point: serves the bot's status JSON (no sensitive data).
 shim:

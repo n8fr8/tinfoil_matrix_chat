@@ -18,6 +18,7 @@ import { resolveCredentials } from "./auth.js";
 import { ChatClient } from "./melong.js";
 import { markdownToMatrixHtml } from "./format.js";
 import { startHealthServer } from "./health.js";
+import { SpeechSidecar } from "./speech.js";
 import {
     MEDIA_MSGTYPES,
     useAuthenticatedMedia,
@@ -54,6 +55,7 @@ async function main() {
                 started: status.started,
                 secondsSinceLastSync: syncAge === null ? null : Math.round(syncAge / 1000),
                 uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
+                ...(status.speechStatus ? { speechSidecar: status.speechStatus } : {}),
                 ...(status.error ? { error: status.error } : {}),
             };
         }, diagHosts);
@@ -120,7 +122,15 @@ async function startBot(status, startedAt) {
     };
     if (config.autojoin) setupAutojoin(client);
 
-    const chat = new ChatClient(config.chat);
+    const speech = config.chat.speechUrl ? new SpeechSidecar(config.chat.speechUrl) : null;
+    if (speech) {
+        // Polled in the background for the status endpoint; doesn't affect "ok".
+        const poll = async () => (status.speechStatus = await speech.status());
+        poll();
+        setInterval(poll, 30000).unref();
+    }
+    if (speech) LogService.info("melong", `Tibetan speech sidecar: ${config.chat.speechUrl}`);
+    const chat = new ChatClient({ ...config.chat, speech });
 
     // Cache our own user id so we can ignore our own messages without an await per event.
     const botUserId = await client.getUserId();
