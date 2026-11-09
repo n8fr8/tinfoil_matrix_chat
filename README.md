@@ -151,12 +151,14 @@ src/
   health.js  HTTP status endpoint (for containers)
   speech.js  client for the Tibetan speech sidecar
 speech/      Tibetan TTS/STT sidecar (Python, ONNX Runtime)
-docs/        research notes (Tibetan speech model comparison)
   login.js   one-off: print an access token
+docs/        research notes (Tibetan speech model comparison)
+TODO.md      follow-ups (testing, licensing, reply model)
 ```
 
 ## Notes
 
+- Open follow-ups (voice-note testing, licensing, Monlam Melong) are tracked in [TODO.md](TODO.md).
 - Encryption uses `RustSdkCryptoStorageProvider` (native module bundled with `matrix-bot-sdk`). The crypto store lives in `data/crypto` — don't delete it or the bot loses its E2EE identity.
 - The `util._extend` deprecation warning on startup comes from a transitive dependency of `matrix-bot-sdk`, not this project.
 ```
