@@ -168,16 +168,32 @@ colloquial sentences at least as well as Kimi, in 12 s against 90 s. Known risk:
 on two ambiguous translation jobs it reasoned until a 12,000-token limit
 (~40 s); the bot now has a 16,000-token limit and reports running out clearly.
 
-### Monlam Melong (not used yet)
+### Monlam Melong (tested, not used)
 
 `TenzinGayche/Monlam_Melong_preview` is Monlam AI's Tibetan LLM: Gemma 2 9B
 fine-tuned from `buddhist-nlp/gemma2-mitra-base`, 18.5 GB in bf16, license
-"to be added". Tinfoil doesn't host it. Running it ourselves is possible: Tinfoil
-can package pinned Hugging Face weights (`tinfoil model wrap`) for a GPU enclave
-running vLLM (1 GPU, ~16 CPUs, 64 GB in Tinfoil's example), but a GPU instance
-is too expensive for this prototype. A 9B model on CPU would need a larger CPU
-instance and would be slow, since Tibetan text uses many tokens. Asking Tinfoil
-to host it is the cheapest route if its Tibetan proves better.
+"to be added". Tinfoil doesn't host it.
+
+Tested locally: converted to 8-bit GGUF with llama.cpp (the repo lacks
+`tokenizer.model`; the base model's was used, same 256k vocabulary) and run on
+an 8-core CPU, against DeepSeek V4.1 Flash on Tinfoil with the same prompts:
+
+| Test | Monlam Melong (q8_0, CPU) | DeepSeek V4.1 Flash |
+|---|---|---|
+| Losar traditions, in Tibetan | Clean, fluent, more detail. 226 s | Clean; a couple of slips ("Gregorian 29th", misspelt *dgu thug*). 3.6 s |
+| Why drink water, in Tibetan | Clean. 113 s | Clean. 5.6 s |
+| Reply to voice note "What do you need? I'll get it for you" | Repeated the message back instead of replying. 17 s | Sensible reply ("I don't need anything, thank you"). 2.0 s |
+| Tibetan to English, 8 colloquial sentences | ~3.5 right | ~3.5 right |
+| English to Tibetan | Natural colloquial phrasing | Correct, more formal |
+| Speed | ~1.6 tokens/s | 2–6 s per answer |
+
+Both translated ངུ་ཆོ་མཐར་ཕྱིན་སོང་ནི་རེད། ("We have graduated") as "The
+crying has stopped", reading ངུ as "cry". Conclusion: Melong's Tibetan may be
+more natural (needs a native speaker to judge), but it is a weaker chat
+assistant and unusably slow on CPU. Running it ourselves needs a GPU enclave
+(`tinfoil model wrap` + vLLM; 1 GPU, ~16 CPUs, 64 GB in Tinfoil's example),
+too expensive for this prototype. Asking Tinfoil to host it is the cheapest
+route if it's wanted later.
 
 ## Reproducing
 
