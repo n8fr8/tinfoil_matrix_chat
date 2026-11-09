@@ -121,7 +121,15 @@ export function toMp3(data) {
 // ffmpeg writes raw samples (a WAV written to a pipe has no valid length
 // field), and we add the 44-byte header ourselves.
 export async function toWav16kMono(data) {
-    const pcm = await ffmpeg(["-vn", "-ac", "1", "-ar", "16000", "-f", "s16le"], data);
+    return pcm16kToWav(await toPcm16kMono(data));
+}
+
+// Raw 16 kHz mono 16-bit PCM, for stitching audio clips together.
+export function toPcm16kMono(data) {
+    return ffmpeg(["-vn", "-ac", "1", "-ar", "16000", "-f", "s16le"], data);
+}
+
+export function pcm16kToWav(pcm) {
     const h = Buffer.alloc(44);
     h.write("RIFF", 0);
     h.writeUInt32LE(36 + pcm.length, 4);

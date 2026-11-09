@@ -96,7 +96,7 @@ Ask for a spoken answer in your own words, by text or in a voice message ("reply
 
 Tinfoil's hosted speech models don't handle Tibetan, so `speech/` is a small CPU-only service running Meta's MMS models, deployed as a second container in the same enclave:
 
-- **Text-to-speech:** `facebook/mms-tts-bod`. Voice replies written mostly in Tibetan script are spoken with it; other languages still use `TINFOIL_TTS_MODEL`.
+- **Text-to-speech:** `facebook/mms-tts-bod`. Tibetan-script parts of a voice reply are spoken with it and everything else with `TINFOIL_TTS_MODEL`; a mixed reply (say, Tibetan with an English gloss) becomes one voice message stitched from both.
 - **Speech-to-text:** `facebook/mms-1b-all` with its Tibetan adapter, exported to ONNX and quantized to int8 at build time. By default (`SPEECH_STT=tibetan`) every voice note and audio file is transcribed by this model only, and the chat model is told to read the transcript as spoken Tibetan. This model always outputs Tibetan script, so other languages come out as nonsense. `SPEECH_STT=both` also runs the general model and lets the chat model pick (it tends to trust the general model's romanized guesses), and `SPEECH_STT=general` uses only the general model.
 
 Both models are exported to ONNX at image build time (`speech/build_models.py`, which also self-tests the conversion), so the running image needs only ONNX Runtime and NumPy, not PyTorch. That matters because inside a Tinfoil enclave with less than 32 GB of memory, **all container images share a fixed 4 GB ramdisk**, counting both their compressed and unpacked size. For the same reason the bot image uses a static `ffmpeg` binary instead of Debian's package.

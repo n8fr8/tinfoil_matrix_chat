@@ -16,8 +16,8 @@
 //            server-side inside the enclave
 
 import { TinfoilAI } from "tinfoil";
-import { toMp3 } from "./media.js";
-import { isMostlyTibetan } from "./speech.js";
+import { pcm16kToWav, toMp3, toPcm16kMono } from "./media.js";
+import { splitByScript } from "./speech.js";
 import { LogService } from "matrix-bot-sdk";
 
 // Builds the Tinfoil SDK client. By default the SDK asks Tinfoil's attestation
@@ -154,16 +154,28 @@ export class ChatClient {
         );
     }
 
-    // Text-to-speech. Returns the audio bytes (WAV). Tibetan text goes to the
-    // speech sidecar when it's enabled; everything else to Tinfoil.
+    // Text-to-speech. Returns the audio bytes (WAV). With the speech sidecar,
+    // Tibetan stretches are spoken by it and everything else by Tinfoil; mixed
+    // replies (e.g. Tibetan plus an English gloss) are stitched together.
     async speak(text) {
-        if (this.speech && isMostlyTibetan(text)) {
-            try {
-                return await this.speech.tts(text);
-            } catch (err) {
-                throw new Error(`Tibetan text-to-speech failed: ${err?.message || err}`);
-            }
+        const runs = this.speech ? splitByScript(text) : [];
+        if (!runs.some((r) => r.tibetan)) return this.speakGeneral(text);
+        if (runs.length === 1) return this.speakTibetan(runs[0].text);
+        const clips = await Promise.all(runs.map((r) => (r.tibetan ? this.speakTibetan(r.text) : this.speakGeneral(r.text))));
+        const pcm = await Promise.all(clips.map(toPcm16kMono));
+        const gap = Buffer.alloc(16000 * 2 * 0.3); // 0.3 s of silence between runs
+        return pcm16kToWav(Buffer.concat(pcm.flatMap((p, i) => (i ? [gap, p] : [p]))));
+    }
+
+    async speakTibetan(text) {
+        try {
+            return await this.speech.tts(text);
+        } catch (err) {
+            throw new Error(`Tibetan text-to-speech failed: ${err?.message || err}`);
         }
+    }
+
+    async speakGeneral(text) {
         try {
             const res = await this.client.audio.speech.create(
                 { model: this.ttsModel, voice: this.ttsVoice, input: text },
