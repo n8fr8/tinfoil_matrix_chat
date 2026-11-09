@@ -2,16 +2,20 @@
 
 1. Downloads the pinned models from Hugging Face:
      facebook/mms-tts-bod                    text-to-speech (VITS)
-     facebook/mms-1b-all + Tibetan adapter   speech-to-text (wav2vec2 CTC)
+     ganga4364/wav2vec2-combine-dialect-model-v2-47000
+                                             speech-to-text (wav2vec2 CTC, 300M,
+                                             Tibetan, several dialects; from an
+                                             OpenPecha developer)
 2. Exports both to ONNX, so the runtime image needs only onnxruntime + NumPy
    (no PyTorch). Inside a Tinfoil enclave all container images share a 4 GB
    ramdisk, and PyTorch alone is ~1.2 GB.
-3. Quantizes the speech-to-text model to int8 (~970 MB instead of 3.9 GB,
-   about 3x faster on CPU, same transcripts in our tests).
+3. Quantizes the speech-to-text model to int8 (~320 MB instead of 1.26 GB,
+   faster on CPU; see docs/tibetan-speech-models.md for the accuracy check).
 4. Self-tests: the NumPy pre/post-processing in speech_core.py must match
    transformers exactly, and both ONNX models must run. Any mismatch fails the build.
 
-Both models are licensed CC-BY-NC 4.0 (non-commercial use, attribution required).
+mms-tts-bod is licensed CC-BY-NC 4.0 (non-commercial use, attribution
+required). The speech-to-text model has no license stated on its model card.
 
 Run: python build_models.py download        (fetch weights; separate cached step)
      python build_models.py /models         (export, quantize, self-test)
@@ -25,8 +29,8 @@ import tempfile
 
 TTS_REPO = "facebook/mms-tts-bod"
 TTS_REV = "e5767a90abf2293827ca6f467a9b964c0dc35fc5"
-STT_REPO = "facebook/mms-1b-all"
-STT_REV = "3d33597edbdaaba14a8e858e2c8caa76e3cec0cd"
+STT_REPO = "ganga4364/wav2vec2-combine-dialect-model-v2-47000"
+STT_REV = "42cfa2068cb30a95192b62c2ce597e96d3626574"
 
 TTS_DIR = "tts"   # tts.onnx + vocab.json + tokenizer_config.json
 STT_DIR = "stt"   # stt_int8.onnx + ctc_vocab.json + ctc_config.json
@@ -41,13 +45,13 @@ SAMPLE_TEXTS = [
 
 
 def download():
-    """Fetches only the needed files (base weights + Tibetan adapter), with retries."""
+    """Fetches only the needed files, with retries."""
     import time
 
     from huggingface_hub import snapshot_download
 
     jobs = [(TTS_REPO, TTS_REV, ["*.json", "model.safetensors"]),
-            (STT_REPO, STT_REV, ["*.json", "model.safetensors", "adapter.bod.safetensors"])]
+            (STT_REPO, STT_REV, ["*.json", "model.safetensors"])]
     for repo, rev, patterns in jobs:
         for attempt in range(1, 5):
             try:
@@ -95,22 +99,21 @@ def export_stt(out_dir):
     from onnxruntime.quantization import QuantType, quantize_dynamic
     from transformers import AutoProcessor, Wav2Vec2ForCTC
 
-    proc = AutoProcessor.from_pretrained(STT_REPO, revision=STT_REV, target_lang="bod")
-    model = Wav2Vec2ForCTC.from_pretrained(STT_REPO, revision=STT_REV, target_lang="bod",
-                                           ignore_mismatched_sizes=True).eval()
+    proc = AutoProcessor.from_pretrained(STT_REPO, revision=STT_REV)
+    model = Wav2Vec2ForCTC.from_pretrained(STT_REPO, revision=STT_REV).eval()
     dummy = torch.zeros(1, 16000)
     with tempfile.TemporaryDirectory() as tmp:
         fp32 = os.path.join(tmp, "stt_fp32.onnx")
         torch.onnx.export(model, (dummy,), fp32, input_names=["input_values"], output_names=["logits"],
                           dynamic_axes={"input_values": {1: "samples"}, "logits": {1: "frames"}},
                           opset_version=17, dynamo=False)
-        del model  # free the ~4 GB PyTorch model before quantizing (build machines have 16 GB)
+        del model  # free the PyTorch model before quantizing
         import gc
         gc.collect()
         quantize_dynamic(fp32, os.path.join(out_dir, "stt_int8.onnx"), weight_type=QuantType.QInt8)
 
     tk = proc.tokenizer
-    vocab = tk.get_vocab()  # the Tibetan ("bod") vocabulary
+    vocab = tk.get_vocab()
     with open(os.path.join(out_dir, "ctc_vocab.json"), "w", encoding="utf-8") as f:
         json.dump(vocab, f, ensure_ascii=False)
     with open(os.path.join(out_dir, "ctc_config.json"), "w", encoding="utf-8") as f:

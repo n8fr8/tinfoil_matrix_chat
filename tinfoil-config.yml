@@ -73,8 +73,9 @@ containers:
       retries: 3
       start_period: 2m
 
-  # Tibetan speech sidecar: MMS text-to-speech + speech-to-text on CPU.
-  # Weights are baked into the image (pinned revisions; models are CC-BY-NC 4.0).
+  # Tibetan speech sidecar: text-to-speech (facebook/mms-tts-bod) + speech-to-text
+  # (ganga4364/wav2vec2-combine-dialect-model-v2-47000) on CPU. Weights are baked
+  # into the image at pinned revisions; see docs/tibetan-speech-models.md for licenses.
   - name: "speech"
     image: "ghcr.io/n8fr8/tinfoil_matrix_chat-speech:placeholder"
     restart: always

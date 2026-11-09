@@ -94,16 +94,16 @@ A voice message (or any audio) always gets a spoken answer, in the language spok
 
 ### Tibetan speech (optional sidecar)
 
-Tinfoil's hosted speech models don't handle Tibetan, so `speech/` is a small CPU-only service running Meta's MMS models, deployed as a second container in the same enclave:
+Tinfoil's hosted speech models don't handle Tibetan, so `speech/` is a small CPU-only service running two open Tibetan models, deployed as a second container in the same enclave. [docs/tibetan-speech-models.md](docs/tibetan-speech-models.md) explains how they were chosen.
 
 - **Text-to-speech:** `facebook/mms-tts-bod`. Tibetan-script parts of a voice reply are spoken with it and everything else with `TINFOIL_TTS_MODEL`; a mixed reply (say, Tibetan with an English gloss) becomes one voice message stitched from both.
-- **Speech-to-text:** `facebook/mms-1b-all` with its Tibetan adapter, exported to ONNX and quantized to int8 at build time. By default (`SPEECH_STT=auto`) each voice note goes to both this model and Tinfoil's Whisper (`SPEECH_DETECT_MODEL`, default `whisper-large-v3-turbo`) in parallel. Whisper can't transcribe Tibetan: on Tibetan speech it returns nothing or low-confidence gibberish. So when Whisper is confident (mean log-probability above `SPEECH_DETECT_THRESHOLD`, default `-0.45`), its transcript is used; otherwise the Tibetan one is. On 59 real clips (Tibetan, English, French, Hindi, Mandarin, Nepali) this routed 58 correctly; the miss was a Nepali clip. `SPEECH_STT=tibetan` uses only this model, and `SPEECH_STT=general` only `TINFOIL_TRANSCRIPTION_MODEL`.
+- **Speech-to-text:** `ganga4364/wav2vec2-combine-dialect-model-v2-47000`, a Tibetan wav2vec2 model from an OpenPecha developer, trained on several dialects. It's exported to ONNX and quantized to int8 at build time. On real Tibetan recordings its character error rate was 26%, against 60% for Meta's `facebook/mms-1b-all`, which it replaced. By default (`SPEECH_STT=auto`) each voice note goes to both this model and Tinfoil's Whisper (`SPEECH_DETECT_MODEL`, default `whisper-large-v3-turbo`) in parallel. Whisper can't transcribe Tibetan: on Tibetan speech it returns nothing or low-confidence gibberish. So when Whisper is confident (mean log-probability above `SPEECH_DETECT_THRESHOLD`, default `-0.45`), its transcript is used; otherwise the Tibetan one is. On 59 real clips (Tibetan, English, French, Hindi, Mandarin, Nepali) this routed 58 correctly; the miss was a Nepali clip. `SPEECH_STT=tibetan` uses only this model, and `SPEECH_STT=general` only `TINFOIL_TRANSCRIPTION_MODEL`.
 
 Both models are exported to ONNX at image build time (`speech/build_models.py`, which also self-tests the conversion), so the running image needs only ONNX Runtime and NumPy, not PyTorch. That matters because inside a Tinfoil enclave with less than 32 GB of memory, **all container images share a fixed 4 GB ramdisk**, counting both their compressed and unpacked size. For the same reason the bot image uses a static `ffmpeg` binary instead of Debian's package.
 
 Set `SPEECH_URL` to enable it (`http://speech:8000` in the container). `/health` shows its state as `speechSidecar`, and `/diag?speech=1` speaks a fixed Tibetan sentence, encodes it as a voice message and transcribes it back, all inside the enclave. If the sidecar fails on Tibetan speech, the bot reports it in the chat (in `auto` mode it falls back to Whisper's low-confidence transcript when there is one).
 
-Both models are licensed **CC-BY-NC 4.0**: non-commercial use only, with attribution to Meta's MMS project.
+**Licenses:** `facebook/mms-tts-bod` is **CC-BY-NC 4.0** (non-commercial use only, with attribution to Meta's MMS project). The speech-to-text model's card states **no license**, so reuse rights are unclear; ask its authors before any use beyond a prototype.
 
 ### Testing the connection
 
@@ -150,7 +150,8 @@ src/
   format.js  Markdown -> Matrix HTML for replies
   health.js  HTTP status endpoint (for containers)
   speech.js  client for the Tibetan speech sidecar
-speech/      Tibetan TTS/STT sidecar (Python, MMS models)
+speech/      Tibetan TTS/STT sidecar (Python, ONNX Runtime)
+docs/        research notes (Tibetan speech model comparison)
   login.js   one-off: print an access token
 ```
 

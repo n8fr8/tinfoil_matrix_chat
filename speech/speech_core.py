@@ -58,7 +58,7 @@ class VitsTokenizer:
 
 
 class CtcProcessor:
-    """Audio normalization + greedy CTC decoding for facebook/mms-1b-all,
+    """Audio normalization + greedy CTC decoding for wav2vec2 CTC models,
     matching transformers' Wav2Vec2 feature extractor and tokenizer decode."""
 
     def __init__(self, processor_dir):

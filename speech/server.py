@@ -10,8 +10,11 @@ enclave's internal network (no internet access):
 Models (exported to ONNX at image build time from pinned revisions, see
 build_models.py):
   facebook/mms-tts-bod                  text-to-speech (VITS)
-  facebook/mms-1b-all + "bod" adapter   speech-to-text (wav2vec2 CTC, int8)
-Both are licensed CC-BY-NC 4.0 (non-commercial use, attribution required).
+  ganga4364/wav2vec2-combine-dialect-model-v2-47000
+                                        speech-to-text (wav2vec2 CTC, int8)
+mms-tts-bod is licensed CC-BY-NC 4.0 (non-commercial use, attribution
+required); the speech-to-text model states no license (see
+docs/tibetan-speech-models.md).
 """
 
 import io
