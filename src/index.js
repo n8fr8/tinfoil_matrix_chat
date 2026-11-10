@@ -14,6 +14,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 import { loadConfig } from "./config.js";
+import { parseCrossSigningKey, signOwnDevice } from "./cross-signing.js";
 import { resolveCredentials } from "./auth.js";
 import { ChatClient } from "./melong.js";
 import { markdownToMatrixHtml } from "./format.js";
@@ -57,6 +58,7 @@ async function main() {
                 uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
                 model: process.env.TINFOIL_MODEL || "deepseek-v4-1-flash",
                 ...(status.webSearch !== undefined ? { webSearch: status.webSearch } : {}),
+                ...(status.crossSigning ? { crossSigning: status.crossSigning } : {}),
                 ...(status.speechStatus ? { speechSidecar: status.speechStatus } : {}),
                 ...(status.error ? { error: status.error } : {}),
             };
@@ -102,6 +104,8 @@ async function startBot(status, startedAt) {
     // upload ("device_id ... does not match"). Scoping the store by device id
     // keeps each token/device pairing isolated, so swapping tokens never collides.
     let cryptoStore;
+    // Parsed up front so a bad secret fails startup with a clear message.
+    const crossSigningKeys = config.encryption && config.crossSigningKey ? parseCrossSigningKey(config.crossSigningKey) : null;
     if (config.encryption) {
         const probe = new MatrixClient(config.homeserverUrl, creds.accessToken);
         const deviceId = (await probe.getWhoAmI())?.device_id;
@@ -167,6 +171,15 @@ async function startBot(status, startedAt) {
 
     await client.start();
     status.started = true;
+    if (crossSigningKeys) {
+        status.crossSigning = await signOwnDevice(client, crossSigningKeys);
+    } else if (config.encryption) {
+        status.crossSigning = "off";
+        LogService.warn(
+            "melong",
+            "MATRIX_CROSS_SIGNING_KEY is not set: this device isn't cross-signed, so some clients won't share room keys with it after a restart. Run `npm run cross-signing`.",
+        );
+    }
     LogService.info("melong", `Bot started as ${botUserId} (encryption ${config.encryption ? "on" : "off"})`);
 
     const shutdown = () => {

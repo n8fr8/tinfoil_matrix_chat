@@ -8,6 +8,7 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env src/index.js",
     "login": "node --env-file-if-exists=.env src/login.js",
+    "cross-signing": "node --env-file-if-exists=.env src/cross-signing-setup.js",
     "probe": "node --env-file-if-exists=.env src/probe.js"
   },
   "engines": {

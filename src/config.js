@@ -65,6 +65,9 @@ export function loadConfig() {
         // --- Behaviour ---
         autojoin: bool(env.MATRIX_AUTOJOIN, true),
         encryption: bool(env.MATRIX_ENCRYPTION, true),
+        // Private cross-signing keys (from `npm run cross-signing`); the bot signs
+        // each new device with them so other users' clients trust it.
+        crossSigningKey: (env.MATRIX_CROSS_SIGNING_KEY || "").trim(),
         // When set (e.g. "!ai"), the bot only replies to messages that start with
         // the prefix. When empty, it replies to every text message in rooms it is in.
         commandPrefix: env.MATRIX_COMMAND_PREFIX ?? "",
