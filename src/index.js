@@ -17,7 +17,8 @@ import { loadConfig } from "./config.js";
 import { parseCrossSigningKey, signOwnDevice } from "./cross-signing.js";
 import { loadPrompts, PromptLibrary } from "./prompts.js";
 import { resolveCredentials } from "./auth.js";
-import { ChatClient, createTinfoilClient } from "./melong.js";
+import { ChatClient, createTinfoilClient, forSpeech } from "./melong.js";
+import { splitMessage, weightedLength } from "./split.js";
 import { markdownToMatrixHtml } from "./format.js";
 import { startHealthServer } from "./health.js";
 import { SpeechSidecar } from "./speech.js";
@@ -278,7 +279,7 @@ async function handleMessage(client, chat, config, botUserId, roomId, event) {
         return;
     }
 
-    await respond(client, chat, roomId, event, body, []);
+    await respond(client, chat, config, roomId, event, body, []);
 }
 
 // Returns the media in a message: the message itself for m.image/m.audio/
@@ -315,10 +316,10 @@ async function handleAttachments(client, chat, config, roomId, event, items) {
     if (prompt === null) return;
 
     // No instruction: the chat client falls back to describing / summarising.
-    await respond(client, chat, roomId, event, prompt, items);
+    await respond(client, chat, config, roomId, event, prompt, items);
 }
 
-async function respond(client, chat, roomId, event, text, attachmentContents) {
+async function respond(client, chat, config, roomId, event, text, attachmentContents) {
     // Thinking models can take a minute or more: keep the typing notice alive.
     const typing = () => client.setTyping(roomId, true, 60000).catch(() => {});
     typing();
@@ -327,12 +328,20 @@ async function respond(client, chat, roomId, event, text, attachmentContents) {
         const attachments = [];
         for (const c of attachmentContents) attachments.push(await downloadAttachment(client, c));
         const reply = await chat.chat(roomId, text, attachments);
-        // Plain Markdown stays in `body` as a fallback; clients render the HTML.
-        // Voice replies get this text message too, then the voice message.
-        await client.sendMessage(roomId, RichReply.createFor(roomId, event, reply.text, markdownToMatrixHtml(reply.text)));
+        // Long replies go out as several messages; the first one is a reply to
+        // the user's message. Plain Markdown stays in `body` as a fallback;
+        // clients render the HTML. Voice replies get the text too, then voice.
+        const parts = splitMessage(reply.text, config.messageMaxChars);
+        for (const [i, part] of parts.entries()) {
+            const html = markdownToMatrixHtml(part);
+            await client.sendMessage(
+                roomId,
+                i ? { msgtype: "m.text", body: part, format: "org.matrix.custom.html", formatted_body: html } : RichReply.createFor(roomId, event, part, html),
+            );
+        }
         if (reply.voice) {
             try {
-                await sendVoiceReply(client, chat, roomId, event, reply.text);
+                await sendVoiceReplies(client, chat, roomId, event, reply.text, config.voiceMaxChars);
             } catch (err) {
                 LogService.error("melong", "Voice reply failed:", err?.message || err);
                 await client.replyNotice(roomId, event, `(Couldn't create the voice version: ${err?.message || err})`);
@@ -347,11 +356,24 @@ async function respond(client, chat, roomId, event, text, attachmentContents) {
     }
 }
 
-// Speaks `text` with Tinfoil TTS and sends it as a Matrix voice message
-// (MSC3245), with the text as a caption so it is still readable.
-async function sendVoiceReply(client, chat, roomId, event, text) {
-    await client.setTyping(roomId, true, 60000).catch(() => {});
-    const voice = await toVoiceMessage(await chat.speak(text));
+// Speaks `text` as one or more Matrix voice messages (MSC3245), split so each
+// fits the text-to-speech length limit. The next part is synthesized while the
+// current one is sent.
+async function sendVoiceReplies(client, chat, roomId, event, text, maxChars) {
+    const parts = splitMessage(forSpeech(text), maxChars, weightedLength);
+    const synth = (part) => chat.speak(part).then(toVoiceMessage);
+    let next = parts.length ? synth(parts[0]) : null;
+    for (const [i, part] of parts.entries()) {
+        await client.setTyping(roomId, true, 60000).catch(() => {});
+        const voice = await next;
+        next = i + 1 < parts.length ? synth(parts[i + 1]) : null;
+        next?.catch(() => {}); // a failure is reported when that part is awaited
+        await sendVoiceMessage(client, roomId, event, part, voice);
+    }
+}
+
+// Sends one voice message, with its text as a caption so it is still readable.
+async function sendVoiceMessage(client, roomId, event, text, voice) {
     const filename = "voice-reply.ogg";
     const media = await uploadForRoom(client, roomId, voice.data, voice.mimetype, filename);
     await client.sendMessage(roomId, {

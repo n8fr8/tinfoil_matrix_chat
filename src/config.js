@@ -85,6 +85,11 @@ export function loadConfig() {
 
         // --- Attachments ---
         // Files larger than this are refused (Tinfoil's document limit is 50 MB).
+        // Longer replies are split into several messages.
+        messageMaxChars: env.CHAT_MESSAGE_MAX_CHARS ? Number(env.CHAT_MESSAGE_MAX_CHARS) : 1500,
+        // Voice replies are split into several voice messages of at most this
+        // many characters (voxtral-tts accepts at most 2000; ~600 is ~50 s).
+        voiceMaxChars: Math.min(env.VOICE_MESSAGE_MAX_CHARS ? Number(env.VOICE_MESSAGE_MAX_CHARS) : 600, 2000),
         maxAttachmentBytes: (env.CHAT_MAX_ATTACHMENT_MB ? Number(env.CHAT_MAX_ATTACHMENT_MB) : 25) * 1024 * 1024,
 
         // --- Chat via Tinfoil private inference ---
@@ -102,6 +107,8 @@ export function loadConfig() {
     if (Number.isNaN(config.chat.maxNewTokens)) errors.push("CHAT_MAX_NEW_TOKENS must be a number");
     if (Number.isNaN(config.healthPort)) errors.push("HEALTH_PORT must be a number");
     if (Number.isNaN(config.maxAttachmentBytes)) errors.push("CHAT_MAX_ATTACHMENT_MB must be a number");
+    if (!(config.messageMaxChars >= 200)) errors.push("CHAT_MESSAGE_MAX_CHARS must be a number of at least 200");
+    if (!(config.voiceMaxChars >= 100)) errors.push("VOICE_MESSAGE_MAX_CHARS must be a number from 100 to 2000");
     if (Number.isNaN(config.chat.historyTurns)) errors.push("CHAT_HISTORY_TURNS must be a number");
 
     if (errors.length) {
