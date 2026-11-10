@@ -15,6 +15,7 @@ Send the bot a message and it replies. It remembers recent messages in each room
 - Understands attachments: images, documents (PDF, Word, PowerPoint, Excel, CSV, text), audio and voice messages, and the soundtrack of videos. See [Attachments](#attachments).
 - Answers voice messages with a voice message (plus the text), and replies by voice when asked ("answer with a voice message", "say it out loud"). See [Voice replies](#voice-replies).
 - Searches the web when a question needs current information, and cites its sources (Tinfoil web search; `WEB_SEARCH=false` turns it off). See [Web search](#web-search).
+- Adds topic-specific guidance for requests like digital security training, legal questions or history lessons, from Markdown files in `prompts/`. See [Topic prompts](#topic-prompts).
 - Remembers the last few exchanges per room (in memory; cleared on restart or with `!reset`).
 
 ## Requirements
@@ -72,11 +73,19 @@ All settings come from environment variables (loaded from `.env`). See [`.env.ex
 | `CHAT_HISTORY_TURNS` | `10` | Past exchanges remembered per room (`0` = none). |
 | `CHAT_MAX_NEW_TOKENS` | `16000` | Reply length cap, including the model's reasoning ("thinking") tokens. |
 | `CHAT_TIMEOUT_MS` | `300000` | Request timeout (thinking models can take a minute or more). |
+| `PROMPTS_DIR` | `./prompts` | Folder of topic prompts; empty turns them off. See [Topic prompts](#topic-prompts). |
+| `PROMPT_CLASSIFIER_MODEL` | `TINFOIL_MODEL` | Model that picks the topic for each message. |
 | `WEB_SEARCH` | `true` | Let the model search the web when it needs to. See [Web search](#web-search). |
 | `TINFOIL_TRANSCRIPTION_MODEL` | `voxtral-small-24b` | Speech-to-text model for audio and video. |
 | `CHAT_MAX_ATTACHMENT_MB` | `25` | Larger attachments are refused. |
 | `TINFOIL_TTS_MODEL` | `voxtral-tts` | Text-to-speech model for voice replies (`qwen3-tts` is the lower-latency alternative). |
 | `TINFOIL_TTS_VOICE` | `neutral_female` | Voice name; must be one the TTS model offers (see `.env.example`). |
+
+### Topic prompts
+
+`prompts/` holds one Markdown file per kind of request: `digital-security`, `legal` and `history` so far. Before each reply, a quick model call reads the message (and the previous exchange, so follow-ups keep their topic) and picks the matching topic, or none. That file's guidance is added to the system prompt. This works in any language, and adds about half a second per message. The log shows `Topic: <name>` for each message, and `/health` lists the loaded topics.
+
+To add a topic, add a file with a `name` and a one-line `description` (what the classifier sees) and the guidance as the body. [prompts/README.md](prompts/README.md) has the format.
 
 ### Web search
 
@@ -163,9 +172,12 @@ src/
   format.js  Markdown -> Matrix HTML for replies
   health.js  HTTP status endpoint (for containers)
   speech.js  client for the Tibetan speech sidecar
+  prompts.js topic prompts: loading and per-message classification
+  cross-signing.js  signs the bot's new devices (setup: npm run cross-signing)
 speech/      Tibetan TTS/STT sidecar (Python, ONNX Runtime)
   login.js   one-off: print an access token
 docs/        research notes (Tibetan speech model comparison)
+prompts/     topic guidance (digital security, legal, history...)
 TODO.md      follow-ups (testing, licensing, reply model)
 ```
 

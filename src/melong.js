@@ -104,7 +104,9 @@ export class ChatClient {
         detectModel = "whisper-large-v3-turbo", // decides Tibetan vs other ("auto")
         detectThreshold = -0.45,
         webSearch = true,
+        prompts = null, // PromptLibrary of topic guidance (optional)
     } = {}) {
+        this.prompts = prompts;
         this.webSearch = webSearch;
         this.detectModel = detectModel;
         this.detectThreshold = detectThreshold;
@@ -252,8 +254,12 @@ export class ChatClient {
 
         const prompt = text || defaultPrompt(attachments);
         const spokenInput = attachments.some((a) => a.kind === "audio");
+        // Topic guidance (prompts/*.md) for this kind of request, if any. Topic
+        // text goes before the voice/Tibetan rules so those have the last word.
+        const topic = await this.prompts?.classify([...notes, text].filter(Boolean).join("\n\n") || prompt, recentContext(history), opts);
         const system =
             this.systemPrompt +
+            (topic ? `\n\nGuidance for this kind of request (${topic.name}):\n${topic.body}` : "") +
             (spokenInput ? SPOKEN_INPUT_INSTRUCTIONS : VOICE_INSTRUCTIONS) +
             TIBETAN_SPEECH_INSTRUCTIONS[this.speechStt];
         const userMsg = parts.length
@@ -303,6 +309,17 @@ export function forSpeech(text) {
         .replace(/[ \t]{2,}/g, " ")
         .replace(/[ \t]+\n/g, "\n")
         .trim();
+}
+
+// The last exchange, shortened, so follow-ups ("what about in Nepal?") keep their topic.
+function recentContext(history) {
+    return history
+        .slice(-2)
+        .map((m) => {
+            const t = typeof m.content === "string" ? m.content : "";
+            return `${m.role}: ${t.length > 400 ? t.slice(0, 400) + "..." : t}`;
+        })
+        .join("\n");
 }
 
 // Error message plus the underlying network cause, if any.

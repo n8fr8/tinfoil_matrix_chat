@@ -4,3 +4,8 @@ data/
 *.log
 __pycache__/
 *.pyc
+.env.*
+!.env.example
+*.swp
+*.swo
+*~

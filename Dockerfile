@@ -22,6 +22,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 COPY src ./src
+COPY prompts ./prompts
 
 # Runtime state (sync token, crypto store, cached login) lives here. In a Tinfoil
 # Container this is a tmpfs, so it is wiped on restart.

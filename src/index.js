@@ -15,8 +15,9 @@ import path from "node:path";
 
 import { loadConfig } from "./config.js";
 import { parseCrossSigningKey, signOwnDevice } from "./cross-signing.js";
+import { loadPrompts, PromptLibrary } from "./prompts.js";
 import { resolveCredentials } from "./auth.js";
-import { ChatClient } from "./melong.js";
+import { ChatClient, createTinfoilClient } from "./melong.js";
 import { markdownToMatrixHtml } from "./format.js";
 import { startHealthServer } from "./health.js";
 import { SpeechSidecar } from "./speech.js";
@@ -59,6 +60,7 @@ async function main() {
                 model: process.env.TINFOIL_MODEL || "deepseek-v4-1-flash",
                 ...(status.webSearch !== undefined ? { webSearch: status.webSearch } : {}),
                 ...(status.crossSigning ? { crossSigning: status.crossSigning } : {}),
+                ...(status.prompts ? { prompts: status.prompts } : {}),
                 ...(status.speechStatus ? { speechSidecar: status.speechStatus } : {}),
                 ...(status.error ? { error: status.error } : {}),
             };
@@ -148,7 +150,14 @@ async function startBot(status, startedAt) {
         setInterval(poll, 30000).unref();
     }
     if (speech) LogService.info("melong", `Tibetan speech sidecar: ${config.chat.speechUrl}`);
-    const chat = new ChatClient({ ...config.chat, speech });
+    const tinfoil = createTinfoilClient();
+    const topicPrompts = config.chat.promptsDir.trim() ? await loadPrompts(config.chat.promptsDir) : [];
+    const prompts = topicPrompts.length
+        ? new PromptLibrary(topicPrompts, { client: tinfoil, model: config.chat.classifierModel })
+        : null;
+    status.prompts = prompts?.names ?? [];
+    LogService.info("melong", `Topic prompts: ${status.prompts.length ? status.prompts.join(", ") : "none"}`);
+    const chat = new ChatClient({ ...config.chat, speech, prompts, client: tinfoil });
 
     // Cache our own user id so we can ignore our own messages without an await per event.
     const botUserId = await client.getUserId();

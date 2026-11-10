@@ -41,6 +41,10 @@ export function loadChatConfig(env = process.env) {
         detectThreshold: env.SPEECH_DETECT_THRESHOLD ? Number(env.SPEECH_DETECT_THRESHOLD) : -0.45,
         // Let the model search the web (Tinfoil web search) when it needs to.
         webSearch: !/^(false|0|no|off)$/i.test((env.WEB_SEARCH || "true").trim()),
+        // Folder of topic prompts (see prompts/README.md); empty turns them off.
+        promptsDir: env.PROMPTS_DIR ?? "./prompts",
+        // Model that picks the topic for each message (default: TINFOIL_MODEL).
+        classifierModel: env.PROMPT_CLASSIFIER_MODEL || env.TINFOIL_MODEL || "deepseek-v4-1-flash",
     };
 }
 
