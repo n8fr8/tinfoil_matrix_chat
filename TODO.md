@@ -16,3 +16,7 @@ Follow-ups for the Tibetan voice features. Background and test results are in [d
 ## Reply model
 
 - [ ] Consider Monlam Melong (`Monlam_Melong_preview`) for Tibetan replies. Its Tibetan reads more natural, but it's weaker as a chat assistant and too slow on CPU (about 1.6 tokens/s). Asking Tinfoil to host it is cheaper than running our own GPU instance.
+
+## Multiple accounts (on hold)
+
+- [ ] Run several Matrix accounts (personas) from one instance. Draft spec: [docs/multi-account-spec.md](docs/multi-account-spec.md).
