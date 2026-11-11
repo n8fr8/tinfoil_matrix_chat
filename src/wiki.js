@@ -7,7 +7,7 @@
 // per-room key derived from WIKI_ENCRYPTION_KEY, and uploaded to the
 // homeserver's media store. The bot's private per-room account data points at
 // the latest upload. The homeserver only ever sees ciphertext. The same zip,
-// decrypted, is what `!wiki export` sends.
+// decrypted, is what `!memory export` sends.
 
 import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -229,7 +229,7 @@ export const WIKI_TOOLS = [
     ),
     tool(
         "wiki_write",
-        "Create or replace a wiki page (Markdown). Only when someone asked you to remember, add, update or fix something in the wiki, or for a !wiki command.",
+        "Create or replace a wiki page (Markdown). Only when someone asked you to remember, add, update or fix something in the wiki, or for a !memory command.",
         { path: str("Page path ending in .md, e.g. topics/samye.md"), content: str("The whole new page content") },
         ["path", "content"],
     ),
@@ -318,15 +318,19 @@ export function wikiInstructions(wiki, schemaText) {
     const index = wiki.text("index.md");
     const schema = wiki.text("SCHEMA.md") || schemaText;
     return (
-        "\n\nThis room has a wiki that you maintain with the wiki_* tools (see its schema below). " +
-        "Read it when it helps answer: check the index, then read the relevant pages, and mention which pages you used. " +
-        "Only change it when someone asks you to remember, save, note, add or update something, or uses a !wiki command; " +
-        "then follow the schema and say briefly what you changed. " +
-        "If someone shares something that seems worth keeping but didn't ask, you may offer once, in one short sentence, to add it to the room's wiki; " +
-        "don't offer repeatedly, and don't write anything until they say yes. " +
-        "Use the tools quietly: don't describe tool calls, just give the answer.\n\n" +
+        "\n\nYou have a memory for this room: a wiki you keep with the wiki_* tools (see its schema below). " +
+        "To people, it is simply your memory of this room. Never mention the wiki, pages, files, paths, folders, the index or the tools to them, " +
+        "and don't list what you created or changed. " +
+        "Use it when it helps answer: check the index, read the relevant pages, and answer naturally (\"From what I remember...\" is fine). " +
+        "Only change it when someone asks you to remember, save, note, add or update something, or uses a !memory command. " +
+        "Then follow the schema, and confirm in one short, friendly sentence, for example \"I've added this to the room's memory.\" " +
+        "or \"Got it, I'll remember that. You can ask me about it anytime.\" " +
+        "If something is unclear or missing (a date, a name), you may ask one short question after confirming. " +
+        "If someone shares something that seems worth keeping but didn't ask, you may offer once, in a few words " +
+        "(\"Want me to remember that?\"); don't offer repeatedly, and don't save anything until they say yes. " +
+        "If someone asks you to forget something, remove it from the pages and the index (sources in raw/ stay as they are; say so only if asked).\n\n" +
         `Wiki schema (SCHEMA.md):\n${schema}\n\n` +
-        (index ? `Current index.md:\n${index.length > 8000 ? index.slice(0, 8000) + "\n[...truncated; use wiki_read]" : index}` : "This room has no wiki yet; it is created on the first write.")
+        (index ? `Current index.md (for you, not for the user):\n${index.length > 8000 ? index.slice(0, 8000) + "\n[...truncated; use wiki_read]" : index}` : "Nothing is remembered for this room yet; the wiki is created on the first write.")
     );
 }
 

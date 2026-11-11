@@ -82,16 +82,17 @@ const TIBETAN_SPEECH_INSTRUCTIONS = {
 const STT_MODES = Object.keys(TIBETAN_SPEECH_INSTRUCTIONS);
 
 // Room wikis (src/wiki.js): tool rounds per reply, size of a shared file
-// kept as a raw source, and the extra instructions for !wiki commands.
+// kept as a raw source, and the extra instructions for !memory commands.
 const MAX_TOOL_ROUNDS = 20;
 const MAX_RAW_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 const WIKI_TASKS = {
     add:
-        "\n\nThe user used the !wiki add command: add the material in their message (and any message or file they replied to) to the wiki now, " +
-        "following the ingest steps in the schema, then summarize what you changed in a few lines.",
+        "\n\nThe user used the !memory add command: add the material in their message (and any message or file they replied to) to the wiki now, " +
+        "following the ingest steps in the schema, then confirm in one short sentence that you'll remember it.",
     lint:
-        "\n\nThe user used the !wiki lint command: do a lint pass over the whole wiki as the schema describes. " +
-        "Read the pages you need, fix what you safely can, then report what you fixed and what needs a person to decide.",
+        "\n\nThe user used the !memory check command: do a lint pass over the whole wiki as the schema describes. " +
+        "Read the pages you need and fix what you safely can. Then reply briefly in plain words: that you've tidied up the room's memory, " +
+        "and any questions only a person can answer. Don't mention pages or files.",
 };
 
 // Tinfoil web search (https://docs.tinfoil.sh/guides/web-search). The model

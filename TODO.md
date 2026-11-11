@@ -21,9 +21,9 @@ Follow-ups for the Tibetan voice features. Background and test results are in [d
 
 - [ ] Run several Matrix accounts (personas) from one instance. Draft spec: [docs/multi-account-spec.md](docs/multi-account-spec.md).
 
-## Room wikis
+## Room memory (wikis)
 
-- [ ] Test in Matrix: "remember this" (also as a reply to a message or file), a question answered from the wiki, `!wiki lint`, `!wiki export`, and a restart (the wiki should reload).
+- [ ] Test in Matrix: "remember this" (also as a reply to a message or file), a question answered from memory, `!memory check`, `!memory export`, and a restart (the memory should reload).
 - [ ] Old wiki versions pile up on the homeserver as encrypted uploads (bots can't delete media). Fine for now; consider asking the homeserver admin to purge old media, or saving less often.
 - [ ] During a blue-green update the old and new instance both run for a few minutes; a wiki change in that window could be overwritten by the other instance.
-- [ ] Anyone in a room can change or clear its wiki. Consider limiting `!wiki clear` to room moderators.
+- [ ] Anyone in a room can change or clear its wiki. Consider limiting `!memory clear` to room moderators.

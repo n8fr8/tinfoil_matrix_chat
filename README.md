@@ -16,7 +16,7 @@ Send the bot a message and it replies. It remembers recent messages in each room
 - Answers voice messages with a voice message (plus the text), and replies by voice when asked ("answer with a voice message", "say it out loud"). See [Voice replies](#voice-replies).
 - Searches the web when a question needs current information, and cites its sources (Tinfoil web search; `WEB_SEARCH=false` turns it off). See [Web search](#web-search).
 - Adds topic-specific guidance for requests like digital security training, legal questions or history lessons, from Markdown files in `prompts/`. See [Topic prompts](#topic-prompts).
-- Keeps a wiki for each room: say "remember this" and the bot files it into linked Markdown pages, uses them to answer, and `!wiki export` downloads the lot as a zip. See [Room wikis](#room-wikis).
+- Remembers things for each room: say "remember this" and ask about it later; `!memory export` downloads everything as a zip. Behind the scenes it's a wiki of linked Markdown pages. See [Room memory](#room-memory).
 - Remembers the last few exchanges per room (in memory; cleared on restart or with `!reset`).
 
 ## Requirements
@@ -76,8 +76,8 @@ All settings come from environment variables (loaded from `.env`). See [`.env.ex
 | `CHAT_TIMEOUT_MS` | `300000` | Request timeout (thinking models can take a minute or more). |
 | `PROMPTS_DIR` | `./prompts` | Folder of topic prompts; empty turns them off. See [Topic prompts](#topic-prompts). |
 | `PROMPT_CLASSIFIER_MODEL` | `TINFOIL_MODEL` | Model that picks the topic for each message. |
-| `WIKI_ENCRYPTION_KEY` | — | Turns on room wikis; encrypts them at rest (base64, 32+ bytes). See [Room wikis](#room-wikis). |
-| `WIKI_MAX_MB` | `20` | Size limit per room wiki. |
+| `WIKI_ENCRYPTION_KEY` | — | Turns on room memory; encrypts it at rest (base64, 32+ bytes). See [Room memory](#room-memory). |
+| `WIKI_MAX_MB` | `20` | Size limit for each room's memory. |
 | `WEB_SEARCH` | `true` | Let the model search the web when it needs to. See [Web search](#web-search). |
 | `TINFOIL_TRANSCRIPTION_MODEL` | `voxtral-small-24b` | Speech-to-text model for audio and video. |
 | `CHAT_MAX_ATTACHMENT_MB` | `25` | Larger attachments are refused. |
@@ -86,17 +86,17 @@ All settings come from environment variables (loaded from `.env`). See [`.env.ex
 | `CHAT_MESSAGE_MAX_CHARS` | `1500` | Longer text replies are sent as several messages. |
 | `VOICE_MESSAGE_MAX_CHARS` | `600` | Longer voice replies are sent as several voice messages (max 2000, the `voxtral-tts` limit). |
 
-### Room wikis
+### Room memory
 
-Each room can build up its own wiki, after Andrej Karpathy's ["LLM Wiki"](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) idea. Instead of digging through chat history, the model keeps linked Markdown pages (people, places, topics, events, notes) and keeps them current.
+The bot can remember things for each room. To people it's simply "the room's memory". Behind the scenes it's a wiki, after Andrej Karpathy's ["LLM Wiki"](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) idea: instead of digging through chat history, the model keeps linked Markdown pages (people, places, topics, events, notes) and keeps them current.
 
-- **Adding is explicit.** Say "remember this", "save this", "note that..." (or reply to a message or file with it), or use `!wiki add`. The bot saves the original under `raw/`, writes a summary page, updates every page it touches, updates `index.md`, and says what changed. If someone shares something that looks worth keeping without asking, the bot may offer once; nothing is written until someone says yes.
-- **Answering:** the bot reads the room's wiki when it helps, and says which pages it used.
-- **Commands:** `!wiki` (help and size), `!wiki add`, `!wiki lint` (find contradictions, gaps and broken links, and fix what it can), `!wiki export` (the whole wiki as a zip of Markdown files, encrypted like any file in encrypted rooms), `!wiki clear confirm`.
-- **The rules** the model follows are in [src/wiki-schema.md](src/wiki-schema.md). Each wiki gets its own copy as `SCHEMA.md`, which people can ask the bot to change for their room.
-- Anyone in the room can add to, change or clear its wiki.
+- **Remembering is explicit.** Say "remember this", "save this", "note that..." (or reply to a message or file with it), or use `!memory add`. The bot confirms in a sentence ("I've added this to the room's memory"). Behind the scenes it saves the original under `raw/`, writes a summary page, updates every page it touches and updates `index.md`. If someone shares something that looks worth keeping without asking, the bot may offer once ("Want me to remember that?"); nothing is saved until someone says yes.
+- **Answering:** the bot uses the room's memory when it helps, and doesn't mention files or pages.
+- **Commands** (`!wiki` works too): `!memory` (help), `!memory add`, `!memory check` (tidy up: fix contradictions, gaps and broken links, and ask about anything only a person can settle), `!memory export` (everything as a zip of Markdown files, encrypted like any file in encrypted rooms), `!memory clear confirm`.
+- **The rules** the model follows are in [src/wiki-schema.md](src/wiki-schema.md). Each room's wiki gets its own copy as `SCHEMA.md`, which people can ask the bot to change for their room.
+- Anyone in the room can add to, change or clear its memory.
 
-**Storage:** the container's disk is wiped on restart, so wikis are kept in Matrix. After each change the bot zips the room's wiki, encrypts it with AES-256-GCM under a per-room key derived from `WIKI_ENCRYPTION_KEY`, uploads it to the homeserver, and stores a pointer in its private per-room account data. The homeserver only sees ciphertext and sizes. Old versions stay on the homeserver as unreadable uploads, since bots can't delete media. Keep `WIKI_ENCRYPTION_KEY` safe: without it the wikis can't be read. If it's wrong, the bot refuses to touch the wiki and answers without it.
+**Storage:** the container's disk is wiped on restart, so room memory is kept in Matrix. After each change the bot zips the room's wiki, encrypts it with AES-256-GCM under a per-room key derived from `WIKI_ENCRYPTION_KEY`, uploads it to the homeserver, and stores a pointer in its private per-room account data. The homeserver only sees ciphertext and sizes. Old versions stay on the homeserver as unreadable uploads, since bots can't delete media. Keep `WIKI_ENCRYPTION_KEY` safe: without it the stored memory can't be read. If it's wrong, the bot refuses to touch the stored memory and answers without it.
 
 Setup: `openssl rand -base64 32`, then store the value in `.env` and as the Tinfoil secret `WIKI_ENCRYPTION_KEY`. Use the same key locally and in the container, since both read the same account data.
 

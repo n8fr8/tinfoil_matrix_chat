@@ -1,6 +1,6 @@
 # Wiki schema
 
-This wiki belongs to one Matrix room. The assistant writes and maintains it; people in the room add to it by asking the assistant to remember things. It follows Andrej Karpathy's "LLM Wiki" idea: knowledge is compiled into linked pages once and kept current, instead of being rediscovered from chat history every time.
+This wiki is the assistant's memory of one Matrix room. The assistant writes and maintains it; people in the room add to it by asking the assistant to remember things. People don't see the files: to them it is just "the room's memory", so replies never mention pages, files or paths. It follows Andrej Karpathy's "LLM Wiki" idea: knowledge is compiled into linked pages once and kept current, instead of being rediscovered from chat history every time.
 
 ## Layout
 
@@ -28,6 +28,6 @@ This wiki belongs to one Matrix room. The assistant writes and maintains it; peo
 
 ## Operations
 
-- **Remember / ingest:** when someone asks to remember something, save the material with `wiki_save_source`, write or update a summary page in `sources/`, then update every page the material touches (often several), creating pages for new people, places or topics. Update `index.md`. Tell the person briefly what changed.
-- **Query:** when answering a question, check `index.md` and read the relevant pages first. Cite pages by path. If an answer is worth keeping and the person agrees, file it as a page in `notes/`.
-- **Lint:** look for contradictions, outdated claims, pages with no links pointing to them, topics mentioned without their own page, missing links between pages, and index entries that don't match the pages. Fix what you can and report the rest.
+- **Remember / ingest:** when someone asks to remember something, save the material with `wiki_save_source`, write or update a summary page in `sources/`, then update every page the material touches (often several), creating pages for new people, places or topics. Update `index.md`. Then just confirm in one short sentence that it's remembered.
+- **Query:** when answering a question, check `index.md` and read the relevant pages first. Answer naturally, without mentioning pages. If an answer is worth keeping and the person agrees, file it as a page in `notes/`.
+- **Lint:** look for contradictions, outdated claims, pages with no links pointing to them, topics mentioned without their own page, missing links between pages, and index entries that don't match the pages. Fix what you can. Report back in plain words, without file names: what you tidied up, and any questions only a person can answer (for example, two different dates for the same event).

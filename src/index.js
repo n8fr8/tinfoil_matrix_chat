@@ -298,7 +298,8 @@ async function handleMessage(client, chat, config, botUserId, roomId, event) {
     // The message being replied to, so "remember this" (or any question) can refer to it.
     const quoted = inReplyTo ? await quotedMessage(client, roomId, inReplyTo) : { text: "", media: [] };
 
-    const wikiCmd = body.match(/^!wiki(?:\s+([\s\S]*))?$/i);
+    // !memory (or the older !wiki) commands.
+    const wikiCmd = body.match(/^!(?:memory|wiki)(?:\s+([\s\S]*))?$/i);
     if (wikiCmd) return handleWikiCommand(client, chat, config, roomId, event, (wikiCmd[1] || "").trim(), quoted);
 
     await respond(client, chat, config, roomId, event, quoted.text + body, quoted.media);
@@ -322,63 +323,61 @@ async function quotedMessage(client, roomId, eventId) {
 }
 
 const WIKI_HELP =
-    "This room's wiki collects what people ask me to remember: say \"remember this\" (or reply to a message with it), and I add it. " +
-    "I also use the wiki to answer questions.\n\n" +
-    "- `!wiki`: this help and the wiki's size\n" +
-    "- `!wiki add <text>`: add something (or reply to a message or file with `!wiki add`)\n" +
-    "- `!wiki lint`: check the wiki for contradictions, gaps and broken links, and fix what I can\n" +
-    "- `!wiki export`: download the whole wiki as a zip of Markdown files\n" +
-    "- `!wiki clear`: delete this room's wiki";
+    "I can remember things for this room. Just say \"remember this\" (you can also reply to a message or file with it), " +
+    "and ask me about it anytime.\n\n" +
+    "- `!memory`: this help\n" +
+    "- `!memory add <text>`: remember something (or reply to a message or file with `!memory add`)\n" +
+    "- `!memory check`: tidy up what I remember and point out anything contradictory\n" +
+    "- `!memory export`: download everything I remember for this room, as a zip of text files\n" +
+    "- `!memory clear`: forget everything for this room";
 
 async function handleWikiCommand(client, chat, config, roomId, event, args, quoted) {
     const store = chat.wikiStore;
     const notice = (text) => client.sendMessage(roomId, RichReply.createFor(roomId, event, text, markdownToMatrixHtml(text)));
-    if (!store) return notice("The wiki isn't set up on this bot (WIKI_ENCRYPTION_KEY is not set).");
+    if (!store) return notice("Memory isn't set up on this bot (WIKI_ENCRYPTION_KEY is not set).");
     const [sub, ...rest] = args.split(/\s+/);
     const command = (sub || "").toLowerCase();
     try {
         if (command === "" || command === "help") {
             const wiki = await store.withRoom(roomId, async (w) => w);
-            const size = wiki.exists
-                ? `This room's wiki has ${wiki.pages().length} pages and ${wiki.files.size - wiki.pages().length} other files (${Math.ceil(wiki.bytes / 1024)} KB).`
-                : "This room doesn't have a wiki yet.";
-            return notice(`${size}\n\n${WIKI_HELP}`);
+            const state = wiki.exists ? "" : "I don't remember anything for this room yet.\n\n";
+            return notice(`${state}${WIKI_HELP}`);
         }
         if (command === "export") return exportWiki(client, store, roomId, event, notice);
         if (command === "add") {
             const text = args.slice(sub.length).trim();
-            if (!text && !quoted.text && !quoted.media.length) return notice("Usage: `!wiki add <text>`, or reply to a message or file with `!wiki add`.");
-            return respond(client, chat, config, roomId, event, quoted.text + (text || "Add this to the wiki."), quoted.media, { wikiTask: "add" });
+            if (!text && !quoted.text && !quoted.media.length) return notice("Usage: `!memory add <text>`, or reply to a message or file with `!memory add`.");
+            return respond(client, chat, config, roomId, event, quoted.text + (text || "Remember this."), quoted.media, { wikiTask: "add" });
         }
-        if (command === "lint") {
+        if (command === "check" || command === "lint") {
             const wiki = await store.withRoom(roomId, async (w) => w);
-            if (!wiki.exists) return notice("This room doesn't have a wiki yet.");
-            return respond(client, chat, config, roomId, event, "Check the wiki (lint pass).", [], { wikiTask: "lint" });
+            if (!wiki.exists) return notice("I don't remember anything for this room yet.");
+            return respond(client, chat, config, roomId, event, "Check and tidy up the room's memory.", [], { wikiTask: "lint" });
         }
         if (command === "clear") {
             if ((rest[0] || "").toLowerCase() !== "confirm") {
-                return notice("This permanently deletes this room's wiki for everyone. To go ahead, send `!wiki clear confirm`. (`!wiki export` first if you want a copy.)");
+                return notice("This makes me forget everything I remember for this room, for everyone. To go ahead, send `!memory clear confirm`. (Use `!memory export` first if you want a copy.)");
             }
             await store.withRoom(roomId, () => store.clear(roomId));
-            return notice("This room's wiki has been deleted.");
+            return notice("Done. I've forgotten everything for this room.");
         }
-        return notice(`Unknown wiki command "${sub}".\n\n${WIKI_HELP}`);
+        return notice(`I don't know the command "${sub}".\n\n${WIKI_HELP}`);
     } catch (err) {
         LogService.error("melong", `Wiki command failed in ${roomId}:`, err?.message || err);
-        return notice(`Sorry, the wiki command failed: ${err?.message || err}`);
+        return notice(`Sorry, that didn't work: ${err?.message || err}`);
     }
 }
 
 // Sends the room's wiki as a zip (encrypted in encrypted rooms, like any file).
 async function exportWiki(client, store, roomId, event, notice) {
     const zip = await store.withRoom(roomId, async (wiki) => (wiki.exists ? wiki.toZip() : null));
-    if (!zip) return notice("This room doesn't have a wiki yet. Ask me to remember something to start one.");
+    if (!zip) return notice("I don't remember anything for this room yet. Say \"remember this\" to start.");
     let name = "room";
     try {
         name = (await client.getRoomStateEvent(roomId, "m.room.name", ""))?.name || name;
     } catch {}
     const slug = name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "room";
-    const filename = `wiki-${slug}-${new Date().toISOString().slice(0, 10)}.zip`;
+    const filename = `memory-${slug}-${new Date().toISOString().slice(0, 10)}.zip`;
     const media = await uploadForRoom(client, roomId, zip, "application/zip", filename);
     await client.sendMessage(roomId, {
         msgtype: "m.file",
@@ -466,7 +465,7 @@ async function respond(client, chat, config, roomId, event, text, attachmentCont
 
 // Runs the chat with this room's wiki (one message at a time per room) and
 // saves the wiki if it changed. If the wiki can't be loaded, normal messages
-// still get an answer without it; !wiki commands report the error.
+// still get an answer without it; !memory commands report the error.
 async function chatWithWiki(chat, roomId, text, attachments, wikiTask) {
     const store = chat.wikiStore;
     if (!store) return chat.chat(roomId, text, attachments);
