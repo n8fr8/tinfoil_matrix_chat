@@ -16,6 +16,7 @@ import path from "node:path";
 import { loadConfig } from "./config.js";
 import { parseCrossSigningKey, signOwnDevice } from "./cross-signing.js";
 import { loadPrompts, PromptLibrary } from "./prompts.js";
+import { defaultSchema, WikiStore } from "./wiki.js";
 import { resolveCredentials } from "./auth.js";
 import { ChatClient, createTinfoilClient, forSpeech } from "./melong.js";
 import { splitMessage, weightedLength } from "./split.js";
@@ -62,6 +63,7 @@ async function main() {
                 ...(status.webSearch !== undefined ? { webSearch: status.webSearch } : {}),
                 ...(status.crossSigning ? { crossSigning: status.crossSigning } : {}),
                 ...(status.prompts ? { prompts: status.prompts } : {}),
+                ...(status.wiki !== undefined ? { wiki: status.wiki } : {}),
                 ...(status.speechStatus ? { speechSidecar: status.speechStatus } : {}),
                 ...(status.error ? { error: status.error } : {}),
             };
@@ -158,11 +160,22 @@ async function startBot(status, startedAt) {
         : null;
     status.prompts = prompts?.names ?? [];
     LogService.info("melong", `Topic prompts: ${status.prompts.length ? status.prompts.join(", ") : "none"}`);
-    const chat = new ChatClient({ ...config.chat, speech, prompts, client: tinfoil });
+    const chat = new ChatClient({
+        ...config.chat,
+        speech,
+        prompts,
+        client: tinfoil,
+        wikiSchema: await defaultSchema(),
+        wikiMaxBytes: config.wikiMaxBytes,
+    });
 
     // Cache our own user id so we can ignore our own messages without an await per event.
     const botUserId = await client.getUserId();
     if (config.displayName) await applyDisplayName(client, botUserId, config.displayName);
+    // Room wikis are stored encrypted in Matrix; off without WIKI_ENCRYPTION_KEY.
+    chat.wikiStore = config.wikiKey ? new WikiStore(client, config.wikiKey, { maxBytes: config.wikiMaxBytes }) : null;
+    status.wiki = Boolean(chat.wikiStore);
+    LogService.info("melong", `Room wikis: ${chat.wikiStore ? "on" : "off (set WIKI_ENCRYPTION_KEY)"}`);
 
     client.on("room.message", (roomId, event) => {
         // Skip messages sent before the bot started. Without a saved sync token
@@ -262,6 +275,9 @@ async function handleMessage(client, chat, config, botUserId, roomId, event) {
     if (content.msgtype !== "m.text") return;
 
     let body = (content.body || "").trim();
+    // Replies quote the original message at the top of the body ("> <@user> ..."); drop it.
+    const inReplyTo = content["m.relates_to"]?.["m.in_reply_to"]?.event_id;
+    if (inReplyTo) body = body.replace(/^(>.*(\n|$))+\n*/, "").trim();
     if (!body || MEDIA_PLACEHOLDER.test(body)) return;
 
     // Optional command prefix: only react to "!ai ..." style messages when set.
@@ -279,7 +295,99 @@ async function handleMessage(client, chat, config, botUserId, roomId, event) {
         return;
     }
 
-    await respond(client, chat, config, roomId, event, body, []);
+    // The message being replied to, so "remember this" (or any question) can refer to it.
+    const quoted = inReplyTo ? await quotedMessage(client, roomId, inReplyTo) : { text: "", media: [] };
+
+    const wikiCmd = body.match(/^!wiki(?:\s+([\s\S]*))?$/i);
+    if (wikiCmd) return handleWikiCommand(client, chat, config, roomId, event, (wikiCmd[1] || "").trim(), quoted);
+
+    await respond(client, chat, config, roomId, event, quoted.text + body, quoted.media);
+}
+
+// Fetches a replied-to message: its text as context, or its file as an attachment.
+async function quotedMessage(client, roomId, eventId) {
+    try {
+        const ev = await client.getEvent(roomId, eventId);
+        const c = ev?.content || {};
+        const media = mediaItems(c);
+        if (media.length) return { text: "", media };
+        let quoted = (c.body || "").replace(/^(>.*(\n|$))+\n*/, "").trim();
+        if (!quoted) return { text: "", media: [] };
+        if (quoted.length > 8000) quoted = quoted.slice(0, 8000) + " [...]";
+        return { text: `[Replying to this message from ${ev.sender}:]\n${quoted.replace(/^/gm, "> ")}\n\n`, media: [] };
+    } catch (err) {
+        LogService.warn("melong", `Couldn't fetch the replied-to message ${eventId}: ${err?.message || err}`);
+        return { text: "", media: [] };
+    }
+}
+
+const WIKI_HELP =
+    "This room's wiki collects what people ask me to remember: say \"remember this\" (or reply to a message with it), and I add it. " +
+    "I also use the wiki to answer questions.\n\n" +
+    "- `!wiki`: this help and the wiki's size\n" +
+    "- `!wiki add <text>`: add something (or reply to a message or file with `!wiki add`)\n" +
+    "- `!wiki lint`: check the wiki for contradictions, gaps and broken links, and fix what I can\n" +
+    "- `!wiki export`: download the whole wiki as a zip of Markdown files\n" +
+    "- `!wiki clear`: delete this room's wiki";
+
+async function handleWikiCommand(client, chat, config, roomId, event, args, quoted) {
+    const store = chat.wikiStore;
+    const notice = (text) => client.sendMessage(roomId, RichReply.createFor(roomId, event, text, markdownToMatrixHtml(text)));
+    if (!store) return notice("The wiki isn't set up on this bot (WIKI_ENCRYPTION_KEY is not set).");
+    const [sub, ...rest] = args.split(/\s+/);
+    const command = (sub || "").toLowerCase();
+    try {
+        if (command === "" || command === "help") {
+            const wiki = await store.withRoom(roomId, async (w) => w);
+            const size = wiki.exists
+                ? `This room's wiki has ${wiki.pages().length} pages and ${wiki.files.size - wiki.pages().length} other files (${Math.ceil(wiki.bytes / 1024)} KB).`
+                : "This room doesn't have a wiki yet.";
+            return notice(`${size}\n\n${WIKI_HELP}`);
+        }
+        if (command === "export") return exportWiki(client, store, roomId, event, notice);
+        if (command === "add") {
+            const text = args.slice(sub.length).trim();
+            if (!text && !quoted.text && !quoted.media.length) return notice("Usage: `!wiki add <text>`, or reply to a message or file with `!wiki add`.");
+            return respond(client, chat, config, roomId, event, quoted.text + (text || "Add this to the wiki."), quoted.media, { wikiTask: "add" });
+        }
+        if (command === "lint") {
+            const wiki = await store.withRoom(roomId, async (w) => w);
+            if (!wiki.exists) return notice("This room doesn't have a wiki yet.");
+            return respond(client, chat, config, roomId, event, "Check the wiki (lint pass).", [], { wikiTask: "lint" });
+        }
+        if (command === "clear") {
+            if ((rest[0] || "").toLowerCase() !== "confirm") {
+                return notice("This permanently deletes this room's wiki for everyone. To go ahead, send `!wiki clear confirm`. (`!wiki export` first if you want a copy.)");
+            }
+            await store.withRoom(roomId, () => store.clear(roomId));
+            return notice("This room's wiki has been deleted.");
+        }
+        return notice(`Unknown wiki command "${sub}".\n\n${WIKI_HELP}`);
+    } catch (err) {
+        LogService.error("melong", `Wiki command failed in ${roomId}:`, err?.message || err);
+        return notice(`Sorry, the wiki command failed: ${err?.message || err}`);
+    }
+}
+
+// Sends the room's wiki as a zip (encrypted in encrypted rooms, like any file).
+async function exportWiki(client, store, roomId, event, notice) {
+    const zip = await store.withRoom(roomId, async (wiki) => (wiki.exists ? wiki.toZip() : null));
+    if (!zip) return notice("This room doesn't have a wiki yet. Ask me to remember something to start one.");
+    let name = "room";
+    try {
+        name = (await client.getRoomStateEvent(roomId, "m.room.name", ""))?.name || name;
+    } catch {}
+    const slug = name.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "room";
+    const filename = `wiki-${slug}-${new Date().toISOString().slice(0, 10)}.zip`;
+    const media = await uploadForRoom(client, roomId, zip, "application/zip", filename);
+    await client.sendMessage(roomId, {
+        msgtype: "m.file",
+        body: filename,
+        filename,
+        ...media,
+        info: { mimetype: "application/zip", size: zip.length },
+        "m.relates_to": { "m.in_reply_to": { event_id: event.event_id } },
+    });
 }
 
 // Returns the media in a message: the message itself for m.image/m.audio/
@@ -319,7 +427,7 @@ async function handleAttachments(client, chat, config, roomId, event, items) {
     await respond(client, chat, config, roomId, event, prompt, items);
 }
 
-async function respond(client, chat, config, roomId, event, text, attachmentContents) {
+async function respond(client, chat, config, roomId, event, text, attachmentContents, { wikiTask } = {}) {
     // Thinking models can take a minute or more: keep the typing notice alive.
     const typing = () => client.setTyping(roomId, true, 60000).catch(() => {});
     typing();
@@ -327,7 +435,7 @@ async function respond(client, chat, config, roomId, event, text, attachmentCont
     try {
         const attachments = [];
         for (const c of attachmentContents) attachments.push(await downloadAttachment(client, c));
-        const reply = await chat.chat(roomId, text, attachments);
+        const reply = await chatWithWiki(chat, roomId, text, attachments, wikiTask);
         // Long replies go out as several messages; the first one is a reply to
         // the user's message. Plain Markdown stays in `body` as a fallback;
         // clients render the HTML. Voice replies get the text too, then voice.
@@ -353,6 +461,30 @@ async function respond(client, chat, config, roomId, event, text, attachmentCont
     } finally {
         clearInterval(keepTyping);
         await client.setTyping(roomId, false).catch(() => {});
+    }
+}
+
+// Runs the chat with this room's wiki (one message at a time per room) and
+// saves the wiki if it changed. If the wiki can't be loaded, normal messages
+// still get an answer without it; !wiki commands report the error.
+async function chatWithWiki(chat, roomId, text, attachments, wikiTask) {
+    const store = chat.wikiStore;
+    if (!store) return chat.chat(roomId, text, attachments);
+    try {
+        return await store.withRoom(roomId, async (wiki) => {
+            try {
+                return await chat.chat(roomId, text, attachments, { wiki, wikiTask });
+            } finally {
+                // Save even if the reply failed, so finished edits aren't lost.
+                await store.save(roomId, wiki).catch((err) => {
+                    LogService.error("melong", `Saving the wiki for ${roomId} failed:`, err?.message || err);
+                });
+            }
+        });
+    } catch (err) {
+        if (!err?.wikiLoad || wikiTask) throw err;
+        LogService.warn("melong", `Answering without the wiki in ${roomId}: ${err.message}`);
+        return chat.chat(roomId, text, attachments);
     }
 }
 

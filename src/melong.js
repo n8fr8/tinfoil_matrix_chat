@@ -19,6 +19,7 @@ import { TinfoilAI } from "tinfoil";
 import { pcm16kToWav, toMp3, toPcm16kMono } from "./media.js";
 import { splitByScript } from "./speech.js";
 import { LogService } from "matrix-bot-sdk";
+import { WIKI_TOOLS, runWikiTool, wikiInstructions } from "./wiki.js";
 
 // Builds the Tinfoil SDK client. By default the SDK asks Tinfoil's attestation
 // service for a router and gets a random one (e.g. router-0.tinfoil.sh or
@@ -80,6 +81,19 @@ const TIBETAN_SPEECH_INSTRUCTIONS = {
 };
 const STT_MODES = Object.keys(TIBETAN_SPEECH_INSTRUCTIONS);
 
+// Room wikis (src/wiki.js): tool rounds per reply, size of a shared file
+// kept as a raw source, and the extra instructions for !wiki commands.
+const MAX_TOOL_ROUNDS = 20;
+const MAX_RAW_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const WIKI_TASKS = {
+    add:
+        "\n\nThe user used the !wiki add command: add the material in their message (and any message or file they replied to) to the wiki now, " +
+        "following the ingest steps in the schema, then summarize what you changed in a few lines.",
+    lint:
+        "\n\nThe user used the !wiki lint command: do a lint pass over the whole wiki as the schema describes. " +
+        "Read the pages you need, fix what you safely can, then report what you fixed and what needs a person to decide.",
+};
+
 // Tinfoil web search (https://docs.tinfoil.sh/guides/web-search). The model
 // decides when to search; searches run in Tinfoil's enclave via Exa. The two
 // filters mask personal data in queries and drop prompt-injection attempts
@@ -105,8 +119,12 @@ export class ChatClient {
         detectThreshold = -0.45,
         webSearch = true,
         prompts = null, // PromptLibrary of topic guidance (optional)
+        wikiSchema = "", // default SCHEMA.md, for rooms without a wiki yet
+        wikiMaxBytes = 20 * 1024 * 1024,
     } = {}) {
         this.prompts = prompts;
+        this.wikiSchema = wikiSchema;
+        this.wikiMaxBytes = wikiMaxBytes;
         this.webSearch = webSearch;
         this.detectModel = detectModel;
         this.detectThreshold = detectThreshold;
@@ -260,26 +278,47 @@ export class ChatClient {
         const system =
             this.systemPrompt +
             (topic ? `\n\nGuidance for this kind of request (${topic.name}):\n${topic.body}` : "") +
+            (opts.wiki ? wikiInstructions(opts.wiki, this.wikiSchema) + (WIKI_TASKS[opts.wikiTask] || "") : "") +
             (spokenInput ? SPOKEN_INPUT_INSTRUCTIONS : VOICE_INSTRUCTIONS) +
             TIBETAN_SPEECH_INSTRUCTIONS[this.speechStt];
         const userMsg = parts.length
             ? { role: "user", content: [{ type: "text", text: prompt }, ...parts] }
             : { role: "user", content: prompt };
 
-        let completion;
+        // With a wiki, the model may call wiki tools for a few rounds before answering.
+        const messages = [{ role: "system", content: system }, ...history, userMsg];
+        const tools = opts.wiki ? { tools: WIKI_TOOLS } : {};
         const started = Date.now();
-        try {
-            completion = await this.client.chat.completions.create(
-                {
-                    model: this.model,
-                    messages: [{ role: "system", content: system }, ...history, userMsg],
-                    max_tokens: this.maxNewTokens,
-                    ...(this.webSearch ? WEB_SEARCH_FIELDS : {}),
-                },
-                { timeout: this.timeoutMs, signal: opts.signal },
-            );
-        } catch (err) {
-            throw new Error(`Tinfoil request failed after ${Math.round((Date.now() - started) / 1000)}s: ${describeError(err)}`);
+        let completion;
+        for (let round = 1; ; round++) {
+            try {
+                completion = await this.client.chat.completions.create(
+                    {
+                        model: this.model,
+                        messages,
+                        max_tokens: this.maxNewTokens,
+                        ...(this.webSearch ? WEB_SEARCH_FIELDS : {}),
+                        ...tools,
+                    },
+                    { timeout: this.timeoutMs, signal: opts.signal },
+                );
+            } catch (err) {
+                throw new Error(`Tinfoil request failed after ${Math.round((Date.now() - started) / 1000)}s: ${describeError(err)}`);
+            }
+            const message = completion?.choices?.[0]?.message;
+            const calls = message?.tool_calls || [];
+            if (!opts.wiki || !calls.length) break;
+            if (round > MAX_TOOL_ROUNDS) throw new Error(`the model was still working on the wiki after ${MAX_TOOL_ROUNDS} rounds; try a smaller request`);
+            messages.push(message);
+            for (const call of calls) {
+                let args = {};
+                try {
+                    args = JSON.parse(call.function?.arguments || "{}");
+                } catch {}
+                const result = await runWikiTool(opts.wiki, call.function?.name, args, { maxBytes: this.wikiMaxBytes });
+                LogService.debug("melong", `Wiki tool ${call.function?.name}(${args.path || args.query || args.title || ""}) -> ${result.slice(0, 80)}`);
+                messages.push({ role: "tool", tool_call_id: call.id, content: result });
+            }
         }
 
         let out = (completion?.choices?.[0]?.message?.content ?? "").toString().trim();
@@ -290,6 +329,17 @@ export class ChatClient {
             throw new Error(`the model used its whole ${this.maxNewTokens}-token budget thinking and wrote no answer; try a simpler or shorter request (or raise CHAT_MAX_NEW_TOKENS)`);
         }
         if (!out) throw new Error("Tinfoil returned an empty response: " + JSON.stringify(completion).slice(0, 300));
+
+        // Wiki changed: keep the shared files as sources and log the change.
+        if (opts.wiki?.changed.size) {
+            for (const a of attachments) {
+                if (a.data.length <= MAX_RAW_ATTACHMENT_BYTES && opts.wiki.bytes + a.data.length <= this.wikiMaxBytes) {
+                    const ext = (a.filename.match(/\.([A-Za-z0-9]{1,8})$/)?.[1] || "bin").toLowerCase();
+                    await opts.wiki.saveSource(a.filename.replace(/\.[^.]*$/, ""), a.data, ext);
+                }
+            }
+            opts.wiki.appendLog(opts.wikiTask === "lint" ? "lint" : "update", text || prompt, [...opts.wiki.changed]);
+        }
 
         // Remember this exchange (text-only), trimmed to the last N turns.
         const remembered = { role: "user", content: [...notes, prompt].join("\n\n") };

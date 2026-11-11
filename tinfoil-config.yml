@@ -68,6 +68,7 @@ containers:
       - TINFOIL_API_KEY
       - MATRIX_PASSWORD
       - MATRIX_CROSS_SIGNING_KEY
+      - WIKI_ENCRYPTION_KEY
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s

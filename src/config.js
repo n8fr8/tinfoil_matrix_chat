@@ -85,6 +85,9 @@ export function loadConfig() {
 
         // --- Attachments ---
         // Files larger than this are refused (Tinfoil's document limit is 50 MB).
+        // Per-room wikis (src/wiki.js). Empty key = wiki commands are off.
+        wikiKey: (env.WIKI_ENCRYPTION_KEY || "").trim(),
+        wikiMaxBytes: (env.WIKI_MAX_MB ? Number(env.WIKI_MAX_MB) : 20) * 1024 * 1024,
         // Longer replies are split into several messages.
         messageMaxChars: env.CHAT_MESSAGE_MAX_CHARS ? Number(env.CHAT_MESSAGE_MAX_CHARS) : 1500,
         // Voice replies are split into several voice messages of at most this
@@ -107,6 +110,7 @@ export function loadConfig() {
     if (Number.isNaN(config.chat.maxNewTokens)) errors.push("CHAT_MAX_NEW_TOKENS must be a number");
     if (Number.isNaN(config.healthPort)) errors.push("HEALTH_PORT must be a number");
     if (Number.isNaN(config.maxAttachmentBytes)) errors.push("CHAT_MAX_ATTACHMENT_MB must be a number");
+    if (!(config.wikiMaxBytes > 0)) errors.push("WIKI_MAX_MB must be a positive number");
     if (!(config.messageMaxChars >= 200)) errors.push("CHAT_MESSAGE_MAX_CHARS must be a number of at least 200");
     if (!(config.voiceMaxChars >= 100)) errors.push("VOICE_MESSAGE_MAX_CHARS must be a number from 100 to 2000");
     if (Number.isNaN(config.chat.historyTurns)) errors.push("CHAT_HISTORY_TURNS must be a number");
