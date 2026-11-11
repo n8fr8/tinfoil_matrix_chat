@@ -312,7 +312,11 @@ async function handleMessage(client, chat, config, botUserId, roomId, event) {
     const wikiCmd = body.match(/^!(?:memory|wiki)(?:\s+([\s\S]*))?$/i);
     if (wikiCmd) return handleWikiCommand(client, chat, config, roomId, event, (wikiCmd[1] || "").trim(), quoted);
 
-    await respond(client, chat, config, roomId, event, quoted.text + body, quoted.media);
+    // Tracked so a file that arrives for this message while it is being
+    // answered can restart the answer with the file included (see handleAttachments).
+    const tracked = { key: `${roomId}|${event.sender}`, event, text: quoted.text + body, media: quoted.media, ts: Date.now(), controller: new AbortController(), sent: false };
+    inflight.set(tracked.key, tracked);
+    await respond(client, chat, config, roomId, event, tracked.text, tracked.media, { tracked });
 }
 
 // m.relates_to for the bot's reply: a reply to the user's message, inside its
@@ -463,6 +467,26 @@ async function handleAttachments(client, chat, config, roomId, event, items) {
     // if it comes, that message answers both (see claimPendingFiles).
     if (!prompt) {
         const key = `${roomId}|${event.sender}`;
+        const rel = event.content?.["m.relates_to"];
+        const threadRoot = rel?.rel_type === "m.thread" ? rel.event_id : null;
+
+        // Some clients send the text first and then the file, as a thread reply
+        // on that text. If that text is still being answered, restart the answer
+        // with the file included.
+        const live = inflight.get(key);
+        if (live && !live.sent && (threadRoot === live.event.event_id || Date.now() - live.ts < TEXT_THEN_FILE_MS)) {
+            live.controller.abort();
+            inflight.delete(key);
+            LogService.info("melong", `File arrived for a message being answered; answering both together`);
+            return respond(client, chat, config, roomId, live.event, live.text, [...live.media, ...items]);
+        }
+        // Too late for that: answer the file using the text it was attached to.
+        if (threadRoot) {
+            const root = await client.getEvent(roomId, threadRoot).catch(() => null);
+            const rootText = root?.sender === event.sender && root.content?.msgtype === "m.text" ? (root.content.body || "").trim() : "";
+            if (rootText) return respond(client, chat, config, roomId, event, stripPrefix(config, rootText) ?? rootText, items);
+        }
+
         const entry = { eventId: event.event_id, items, ts: Date.now() };
         entry.timer = setTimeout(() => {
             removePending(key, entry);
@@ -476,6 +500,11 @@ async function handleAttachments(client, chat, config, roomId, event, items) {
     }
     await respond(client, chat, config, roomId, event, prompt, items);
 }
+
+// Text messages being answered, by "room|sender", and how soon after one a
+// captionless file (not in its thread) still counts as belonging to it.
+const inflight = new Map();
+const TEXT_THEN_FILE_MS = 15000;
 
 // Captionless files waiting for a follow-up note, by "room|sender".
 const FILE_NOTE_WAIT_MS = 6000;
@@ -502,7 +531,8 @@ function claimPendingFiles(roomId, sender, targetEventId) {
     return media;
 }
 
-async function respond(client, chat, config, roomId, event, text, attachmentContents, { wikiTask } = {}) {
+async function respond(client, chat, config, roomId, event, text, attachmentContents, { wikiTask, tracked } = {}) {
+    const signal = tracked?.controller.signal;
     // Thinking models can take a minute or more: keep the typing notice alive.
     const typing = () => client.setTyping(roomId, true, 60000).catch(() => {});
     typing();
@@ -510,7 +540,10 @@ async function respond(client, chat, config, roomId, event, text, attachmentCont
     try {
         const attachments = [];
         for (const c of attachmentContents) attachments.push(await downloadAttachment(client, c));
-        const reply = await chatWithWiki(chat, roomId, text, attachments, wikiTask);
+        const reply = await chatWithWiki(chat, roomId, text, attachments, wikiTask, signal);
+        // Superseded by a file that arrived for this message: a new answer covers both.
+        if (signal?.aborted) return;
+        if (tracked) tracked.sent = true;
         // Long replies go out as several messages; the first one is a reply to
         // the user's message. Plain Markdown stays in `body` as a fallback;
         // clients render the HTML. Voice replies get the text too, then voice.
@@ -527,24 +560,27 @@ async function respond(client, chat, config, roomId, event, text, attachmentCont
             }
         }
     } catch (err) {
+        if (signal?.aborted) return;
         LogService.error("melong", "Chat request failed:", err?.message || err);
         await replyNotice(client, roomId, event, `Sorry, something went wrong: ${err?.message || err}`);
     } finally {
         clearInterval(keepTyping);
-        await client.setTyping(roomId, false).catch(() => {});
+        // When superseded, the new answer keeps the typing notice going.
+        if (!signal?.aborted) await client.setTyping(roomId, false).catch(() => {});
+        if (tracked && inflight.get(tracked.key) === tracked) inflight.delete(tracked.key);
     }
 }
 
 // Runs the chat with this room's wiki (one message at a time per room) and
 // saves the wiki if it changed. If the wiki can't be loaded, normal messages
 // still get an answer without it; !memory commands report the error.
-async function chatWithWiki(chat, roomId, text, attachments, wikiTask) {
+async function chatWithWiki(chat, roomId, text, attachments, wikiTask, signal) {
     const store = chat.wikiStore;
-    if (!store) return chat.chat(roomId, text, attachments);
+    if (!store) return chat.chat(roomId, text, attachments, { signal });
     try {
         return await store.withRoom(roomId, async (wiki) => {
             try {
-                return await chat.chat(roomId, text, attachments, { wiki, wikiTask });
+                return await chat.chat(roomId, text, attachments, { wiki, wikiTask, signal });
             } finally {
                 // Save even if the reply failed, so finished edits aren't lost.
                 await store.save(roomId, wiki).catch((err) => {
@@ -555,7 +591,7 @@ async function chatWithWiki(chat, roomId, text, attachments, wikiTask) {
     } catch (err) {
         if (!err?.wikiLoad || wikiTask) throw err;
         LogService.warn("melong", `Answering without the wiki in ${roomId}: ${err.message}`);
-        return chat.chat(roomId, text, attachments);
+        return chat.chat(roomId, text, attachments, { signal });
     }
 }
 
