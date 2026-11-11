@@ -319,15 +319,16 @@ async function handleMessage(client, chat, config, botUserId, roomId, event) {
     await respond(client, chat, config, roomId, event, tracked.text, tracked.media, { tracked });
 }
 
-// m.relates_to for the bot's reply: a reply to the user's message, inside its
-// thread if it was sent in one. Later parts of a long reply only need the thread.
+// m.relates_to for the bot's reply. Replies always go in the main timeline, as
+// separate messages: some clients put a voice note or file in a thread under a
+// placeholder message, and answering inside that thread hides the answer.
+// For a message in a thread, quote the thread's first message (the one shown
+// in the timeline). Later parts of a long reply aren't quoted.
 function replyRelation(event, first = true) {
+    if (!first) return undefined;
     const rel = event?.content?.["m.relates_to"];
-    const reply = { "m.in_reply_to": { event_id: event.event_id } };
-    if (rel?.rel_type === "m.thread" && rel.event_id) {
-        return { rel_type: "m.thread", event_id: rel.event_id, is_falling_back: true, ...reply };
-    }
-    return first ? reply : undefined;
+    const target = rel?.rel_type === "m.thread" && rel.event_id ? rel.event_id : event.event_id;
+    return { "m.in_reply_to": { event_id: target } };
 }
 
 function replyContent(event, text, { msgtype = "m.text", first = true } = {}) {
@@ -483,9 +484,12 @@ async function handleAttachments(client, chat, config, roomId, event, items) {
         // Too late for that: answer the file using the text it was attached to.
         if (threadRoot) {
             const root = await client.getEvent(roomId, threadRoot).catch(() => null);
-            const rootText = root?.sender === event.sender && root.content?.msgtype === "m.text" ? (root.content.body || "").trim() : "";
+            let rootText = root?.sender === event.sender && root.content?.msgtype === "m.text" ? (root.content.body || "").trim() : "";
+            if (MEDIA_PLACEHOLDER.test(rootText)) rootText = ""; // e.g. "Sent 1 media items." above a voice note
             if (rootText) return respond(client, chat, config, roomId, event, stripPrefix(config, rootText) ?? rootText, items);
         }
+        // Voice notes and audio don't get a follow-up note: answer right away.
+        if (items.every((c) => c.msgtype === "m.audio")) return respond(client, chat, config, roomId, event, "", items);
 
         const entry = { eventId: event.event_id, items, ts: Date.now() };
         entry.timer = setTimeout(() => {
