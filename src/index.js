@@ -8,10 +8,10 @@ import {
     LogService,
     RichConsoleLogger,
     LogLevel,
-    RichReply,
 } from "matrix-bot-sdk";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { loadConfig } from "./config.js";
 import { parseCrossSigningKey, signOwnDevice } from "./cross-signing.js";
@@ -278,31 +278,67 @@ async function handleMessage(client, chat, config, botUserId, roomId, event) {
     // Replies quote the original message at the top of the body ("> <@user> ..."); drop it.
     const inReplyTo = content["m.relates_to"]?.["m.in_reply_to"]?.event_id;
     if (inReplyTo) body = body.replace(/^(>.*(\n|$))+\n*/, "").trim();
+    // In a thread, the message it's about is the thread's first message (some
+    // clients send a file, then the note about it as a thread reply). Inside a
+    // thread, m.in_reply_to is only a real reply when is_falling_back is false.
+    const rel = content["m.relates_to"] || {};
+    const threadRoot = rel.rel_type === "m.thread" ? rel.event_id : null;
+    const target = inReplyTo && !(threadRoot && rel.is_falling_back) ? inReplyTo : threadRoot;
     if (!body || MEDIA_PLACEHOLDER.test(body)) return;
 
     // Optional command prefix: only react to "!ai ..." style messages when set.
     body = stripPrefix(config, body);
     if (body === null) return;
     if (!body) {
-        await client.replyNotice(roomId, event, `Usage: ${config.commandPrefix} <your message>`);
+        await replyNotice(client, roomId, event, `Usage: ${config.commandPrefix} <your message>`);
         return;
     }
 
     // "!reset" clears the bot's memory of this room.
     if (body === "!reset") {
         chat.reset(roomId);
-        await client.replyNotice(roomId, event, "Conversation history cleared.");
+        await replyNotice(client, roomId, event, "Conversation history cleared.");
         return;
     }
 
     // The message being replied to, so "remember this" (or any question) can refer to it.
-    const quoted = inReplyTo ? await quotedMessage(client, roomId, inReplyTo) : { text: "", media: [] };
+    // Files this person just sent without a caption are answered together with
+    // this message (claimed first, before any await, so they aren't also answered alone).
+    const claimed = claimPendingFiles(roomId, event.sender, target);
+    const quoted = target ? await quotedMessage(client, roomId, target) : { text: "", media: [] };
+    quoted.media.push(...claimed);
 
     // !memory (or the older !wiki) commands.
     const wikiCmd = body.match(/^!(?:memory|wiki)(?:\s+([\s\S]*))?$/i);
     if (wikiCmd) return handleWikiCommand(client, chat, config, roomId, event, (wikiCmd[1] || "").trim(), quoted);
 
     await respond(client, chat, config, roomId, event, quoted.text + body, quoted.media);
+}
+
+// m.relates_to for the bot's reply: a reply to the user's message, inside its
+// thread if it was sent in one. Later parts of a long reply only need the thread.
+function replyRelation(event, first = true) {
+    const rel = event?.content?.["m.relates_to"];
+    const reply = { "m.in_reply_to": { event_id: event.event_id } };
+    if (rel?.rel_type === "m.thread" && rel.event_id) {
+        return { rel_type: "m.thread", event_id: rel.event_id, is_falling_back: true, ...reply };
+    }
+    return first ? reply : undefined;
+}
+
+function replyContent(event, text, { msgtype = "m.text", first = true } = {}) {
+    const relation = replyRelation(event, first);
+    return {
+        msgtype,
+        body: text,
+        format: "org.matrix.custom.html",
+        formatted_body: markdownToMatrixHtml(text),
+        ...(relation ? { "m.relates_to": relation } : {}),
+    };
+}
+
+function replyNotice(client, roomId, event, text) {
+    return client.sendMessage(roomId, replyContent(event, text, { msgtype: "m.notice" }));
 }
 
 // Fetches a replied-to message: its text as context, or its file as an attachment.
@@ -333,7 +369,7 @@ const WIKI_HELP =
 
 async function handleWikiCommand(client, chat, config, roomId, event, args, quoted) {
     const store = chat.wikiStore;
-    const notice = (text) => client.sendMessage(roomId, RichReply.createFor(roomId, event, text, markdownToMatrixHtml(text)));
+    const notice = (text) => client.sendMessage(roomId, replyContent(event, text));
     if (!store) return notice("Memory isn't set up on this bot (WIKI_ENCRYPTION_KEY is not set).");
     const [sub, ...rest] = args.split(/\s+/);
     const command = (sub || "").toLowerCase();
@@ -385,7 +421,7 @@ async function exportWiki(client, store, roomId, event, notice) {
         filename,
         ...media,
         info: { mimetype: "application/zip", size: zip.length },
-        "m.relates_to": { "m.in_reply_to": { event_id: event.event_id } },
+        "m.relates_to": replyRelation(event),
     });
 }
 
@@ -407,7 +443,7 @@ async function handleAttachments(client, chat, config, roomId, event, items) {
     if (tooBig) {
         if (!config.commandPrefix) {
             const mb = Math.round(config.maxAttachmentBytes / 1024 / 1024);
-            await client.replyNotice(roomId, event, `Sorry, "${attachmentFilename(tooBig)}" is too large (limit ${mb} MB).`);
+            await replyNotice(client, roomId, event, `Sorry, "${attachmentFilename(tooBig)}" is too large (limit ${mb} MB).`);
         }
         return;
     }
@@ -422,8 +458,48 @@ async function handleAttachments(client, chat, config, roomId, event, items) {
     const prompt = stripPrefix(config, caption);
     if (prompt === null) return;
 
-    // No instruction: the chat client falls back to describing / summarising.
+    // No caption: many clients send the note about a file as a separate
+    // message just after it (often as a thread reply). Wait briefly for one;
+    // if it comes, that message answers both (see claimPendingFiles).
+    if (!prompt) {
+        const key = `${roomId}|${event.sender}`;
+        const entry = { eventId: event.event_id, items, ts: Date.now() };
+        entry.timer = setTimeout(() => {
+            removePending(key, entry);
+            // No note came: the chat client falls back to describing / summarising.
+            respond(client, chat, config, roomId, event, "", items).catch((err) => {
+                LogService.error("melong", `Failed to answer a file in ${roomId}:`, err?.message || err);
+            });
+        }, FILE_NOTE_WAIT_MS);
+        pendingFiles.set(key, [...(pendingFiles.get(key) || []), entry]);
+        return;
+    }
     await respond(client, chat, config, roomId, event, prompt, items);
+}
+
+// Captionless files waiting for a follow-up note, by "room|sender".
+const FILE_NOTE_WAIT_MS = 6000;
+const pendingFiles = new Map();
+
+function removePending(key, entry) {
+    const left = (pendingFiles.get(key) || []).filter((e) => e !== entry);
+    if (left.length) pendingFiles.set(key, left);
+    else pendingFiles.delete(key);
+}
+
+// Takes this sender's waiting files (so they aren't answered separately) and
+// returns their media. The replied-to file itself is already fetched by the
+// caller, so it is left out of the result.
+function claimPendingFiles(roomId, sender, targetEventId) {
+    const key = `${roomId}|${sender}`;
+    const entries = pendingFiles.get(key) || [];
+    pendingFiles.delete(key);
+    const media = [];
+    for (const e of entries) {
+        clearTimeout(e.timer);
+        if (e.eventId !== targetEventId) media.push(...e.items);
+    }
+    return media;
 }
 
 async function respond(client, chat, config, roomId, event, text, attachmentContents, { wikiTask } = {}) {
@@ -440,23 +516,19 @@ async function respond(client, chat, config, roomId, event, text, attachmentCont
         // clients render the HTML. Voice replies get the text too, then voice.
         const parts = splitMessage(reply.text, config.messageMaxChars);
         for (const [i, part] of parts.entries()) {
-            const html = markdownToMatrixHtml(part);
-            await client.sendMessage(
-                roomId,
-                i ? { msgtype: "m.text", body: part, format: "org.matrix.custom.html", formatted_body: html } : RichReply.createFor(roomId, event, part, html),
-            );
+            await client.sendMessage(roomId, replyContent(event, part, { first: i === 0 }));
         }
         if (reply.voice) {
             try {
                 await sendVoiceReplies(client, chat, roomId, event, reply.text, config.voiceMaxChars);
             } catch (err) {
                 LogService.error("melong", "Voice reply failed:", err?.message || err);
-                await client.replyNotice(roomId, event, `(Couldn't create the voice version: ${err?.message || err})`);
+                await replyNotice(client, roomId, event, `(Couldn't create the voice version: ${err?.message || err})`);
             }
         }
     } catch (err) {
         LogService.error("melong", "Chat request failed:", err?.message || err);
-        await client.replyNotice(roomId, event, `Sorry, something went wrong: ${err?.message || err}`);
+        await replyNotice(client, roomId, event, `Sorry, something went wrong: ${err?.message || err}`);
     } finally {
         clearInterval(keepTyping);
         await client.setTyping(roomId, false).catch(() => {});
@@ -515,7 +587,7 @@ async function sendVoiceMessage(client, roomId, event, text, voice) {
         info: { mimetype: voice.mimetype, size: voice.data.length, duration: voice.durationMs },
         "org.matrix.msc1767.audio": { duration: voice.durationMs, waveform: voice.waveform },
         "org.matrix.msc3245.voice": {},
-        "m.relates_to": { "m.in_reply_to": { event_id: event.event_id } },
+        "m.relates_to": replyRelation(event),
     });
 }
 
@@ -532,7 +604,12 @@ async function applyDisplayName(client, userId, displayName) {
     }
 }
 
-main().catch((err) => {
-    console.error("Fatal:", err?.message || err);
-    process.exit(1);
-});
+// Exported for tests; the bot only starts when this file is run directly.
+export { handleMessage };
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+    main().catch((err) => {
+        console.error("Fatal:", err?.message || err);
+        process.exit(1);
+    });
+}
