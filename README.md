@@ -15,7 +15,7 @@ Send the bot a message and it replies. It remembers recent messages in each room
 - Understands attachments: images, documents (PDF, Word, PowerPoint, Excel, CSV, text), audio and voice messages, and the soundtrack of videos. See [Attachments](#attachments).
 - Answers voice messages with a voice message (plus the text), and replies by voice when asked ("answer with a voice message", "say it out loud"). See [Voice replies](#voice-replies).
 - Searches the web when a question needs current information, and cites its sources (Tinfoil web search; `WEB_SEARCH=false` turns it off). See [Web search](#web-search).
-- Adds topic-specific guidance for requests like digital security training, legal questions, history lessons or Tibetan monastic-style debate, from Markdown files in `prompts/`. See [Topic prompts](#topic-prompts).
+- Adds topic-specific guidance for requests like digital security training, legal questions, history lessons, Tibetan monastic-style debate or nonviolent action training, from Markdown files in `prompts/`. See [Topic prompts](#topic-prompts).
 - Remembers things for each room: say "remember this" and ask about it later; `!memory export` downloads everything as a zip. Behind the scenes it's a wiki of linked Markdown pages. See [Room memory](#room-memory).
 - Remembers the last few exchanges per room (in memory; cleared on restart or with `!reset`).
 
@@ -104,7 +104,7 @@ Setup: `openssl rand -base64 32`, then store the value in `.env` and as the Tinf
 
 ### Topic prompts
 
-`prompts/` holds one Markdown file per kind of request: `digital-security`, `legal`, `history` and `debate` so far. `debate` turns the bot into a Tibetan monastic debate partner: it challenges your thesis one consequence at a time ("take X: it follows that..., because..."), you answer "I accept", "the reason isn't established", "it doesn't follow" or "why?", and it claps (👏 "Tsa!") when you contradict yourself. Ask to swap roles to be the challenger. Before each reply, a quick model call reads the message (and the previous exchange, so follow-ups keep their topic) and picks the matching topic, or none. That file's guidance is added to the system prompt. This works in any language, and adds about half a second per message. The log shows `Topic: <name>` for each message, and `/health` lists the loaded topics.
+`prompts/` holds one Markdown file per kind of request: `digital-security`, `legal`, `history`, `debate` and `nonviolent-action` so far. `nonviolent-action` is a trainer for movement and rights organizing, built on Gene Sharp's 198 methods of nonviolent action and the CANVAS Core Curriculum (vision of tomorrow, pillars of support, mechanisms of change, dilemma actions, fear management, nonviolent discipline, security culture). `debate` turns the bot into a Tibetan monastic debate partner: it challenges your thesis one consequence at a time ("take X: it follows that..., because..."), you answer "I accept", "the reason isn't established", "it doesn't follow" or "why?", and it claps (👏 "Tsa!") when you contradict yourself. Ask to swap roles to be the challenger. Before each reply, a quick model call reads the message (and the previous exchange, so follow-ups keep their topic) and picks the matching topic, or none. That file's guidance is added to the system prompt. This works in any language, and adds about half a second per message. The log shows `Topic: <name>` for each message, and `/health` lists the loaded topics.
 
 To add a topic, add a file with a `name` and a one-line `description` (what the classifier sees) and the guidance as the body. [prompts/README.md](prompts/README.md) has the format.
 
@@ -203,7 +203,7 @@ src/
 speech/      Tibetan TTS/STT sidecar (Python, ONNX Runtime)
   login.js   one-off: print an access token
 docs/        research notes (Tibetan speech model comparison)
-prompts/     topic guidance (digital security, legal, history, debate)
+prompts/     topic guidance (digital security, legal, history, debate, nonviolent action)
 test/        offline tests: npm test (no network or keys)
 CLAUDE.md    working notes for AI coding sessions (deploys, gotchas, testing)
 TODO.md      follow-ups (testing, licensing, reply model)

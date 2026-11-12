@@ -36,7 +36,7 @@ src/auth.js           password login, token cache, old-device cleanup
 src/health.js         /health and /diag (?inference=1, ?speech=1) endpoints
 src/format.js         Markdown -> Matrix HTML
 speech/               Tibetan STT/TTS sidecar (Python, ONNX Runtime, CPU), its own container
-prompts/              topic prompts (digital-security, legal, history, debate); README explains the format
+prompts/              topic prompts (digital-security, legal, history, debate, nonviolent-action); README explains the format
 docs/                 research notes: tibetan-speech-models.md, multi-account-spec.md (on hold)
 test/                 offline tests (npm test)
 tinfoil-config.yml    the measured container config (public; no secret values)
