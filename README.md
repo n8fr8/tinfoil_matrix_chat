@@ -15,8 +15,9 @@ Send the bot a message and it replies. It remembers recent messages in each room
 - Understands attachments: images, documents (PDF, Word, PowerPoint, Excel, CSV, text), audio and voice messages, and the soundtrack of videos. See [Attachments](#attachments).
 - Answers voice messages with a voice message (plus the text), and replies by voice when asked ("answer with a voice message", "say it out loud"). See [Voice replies](#voice-replies).
 - Searches the web when a question needs current information, and cites its sources (Tinfoil web search; `WEB_SEARCH=false` turns it off). See [Web search](#web-search).
-- Adds topic-specific guidance for requests like digital security training, legal questions, history lessons, Tibetan monastic-style debate or nonviolent action training, from Markdown files in `prompts/`. See [Topic prompts](#topic-prompts).
+- Adds topic-specific guidance for requests like digital security training, legal questions, history lessons, Tibetan monastic-style debate, nonviolent action training or open-source investigation, from Markdown files in `prompts/`. See [Topic prompts](#topic-prompts).
 - Remembers things for each room: say "remember this" and ask about it later; `!memory export` downloads everything as a zip. Behind the scenes it's a wiki of linked Markdown pages. See [Room memory](#room-memory).
+- Checks photos, videos, audio and ProofMode proof bundles for Content Credentials (C2PA), metadata and signatures, and helps with open-source investigation. See [Media forensics](#media-forensics).
 - Makes PDF documents on request ("make this a printable document", "send me a PDF handout"), in any language including Tibetan. See [PDF documents](#pdf-documents).
 - Remembers the last few exchanges per room (in memory; cleared on restart or with `!reset`).
 
@@ -82,6 +83,7 @@ All settings come from environment variables (loaded from `.env`). See [`.env.ex
 | `WIKI_ENCRYPTION_KEY` | — | Turns on room memory; encrypts it at rest (base64, 32+ bytes). See [Room memory](#room-memory). |
 | `WIKI_MAX_MB` | `20` | Size limit for each room's memory. |
 | `PDF_DOCUMENTS` | `true` | Let the model make PDF documents on request (needs WeasyPrint, which the Docker image includes). |
+| `MEDIA_FORENSICS` | `true` | Offer the `inspect_media` tool for attachments (needs `c2patool` and `exiftool`, which the Docker image includes; `proofmode` is optional, for proof bundles). |
 | `WEB_SEARCH` | `true` | Let the model search the web when it needs to. See [Web search](#web-search). |
 | `TINFOIL_TRANSCRIPTION_MODEL` | `voxtral-small-24b` | Speech-to-text model for audio and video. |
 | `CHAT_MAX_ATTACHMENT_MB` | `25` | Larger attachments are refused. |
@@ -100,6 +102,18 @@ Ask for a document, a printable version, a handout, a report or a PDF ("make tha
 - In encrypted rooms the PDF is encrypted like any other file. At most 3 documents per reply.
 - WeasyPrint is installed in the Docker image with pip (versions pinned in `requirements-pdf.txt`); it adds about 290 MB, mostly fonts. Running the bot outside Docker without WeasyPrint just turns PDFs off.
 
+### Media forensics
+
+Send a photo, video, audio file or ProofMode proof bundle (zip) and ask whether it's authentic, edited or AI-generated, where or when it was made, or what its metadata says. The model calls an `inspect_media` tool ([src/forensics.js](src/forensics.js)) instead of guessing, then explains the results. Everything runs inside the container; the file isn't sent to any other service.
+
+- **SHA-256 hash and size** of the exact file received.
+- **Content Credentials (C2PA)** via [c2patool](https://github.com/contentauth/c2pa-rs/tree/main/cli), validated against the official C2PA trust list and the older interim trust list, both checked into [c2pa-trust/](c2pa-trust/README.md) so the trust store is part of the attested image (`npm run c2pa-trust` refreshes them). `Trusted` means the signer chains to a listed certificate authority (e.g. Google Pixel, Leica); `Valid` means the signature and content check out but the signer isn't listed (e.g. ProofMode's own keys); `Invalid` comes with failure codes such as `assertion.dataHash.mismatch` (changed after signing).
+- **Metadata** (EXIF, XMP, IPTC, QuickTime) via [ExifTool](https://exiftool.org): camera, software, capture time, GPS.
+- **ProofMode proof bundles** (zip): the file list with hashes, Guardian Project's own checker ([proofmode-rust](https://gitlab.com/guardianproject/proofmode/proofmode-rust) `proofmode check`: OpenPGP signatures, OpenTimestamps, device attestation, consistency and timing across files), and c2patool on each media file inside. The same bundle can be checked in a browser with [ProofCheck](https://proofmode.org/verify).
+- The `osint` topic prompt ([prompts/osint.md](prompts/osint.md)) adds the investigator's method: preserve and hash first, read C2PA results correctly, treat metadata as leads, geolocation and chronolocation, reverse image search, careful reporting with confidence levels, and safety (protect sources and people depicted, don't help expose private individuals).
+- **Send evidence as a file**, not as a compressed image: many apps recompress photos and strip metadata and Content Credentials. Only files in the current message (or the one you reply to) can be inspected.
+- In the Docker image, c2patool and proofmode are built from source (pinned versions) on Debian 12, and ExifTool comes from Debian.
+
 ### Room memory
 
 The bot can remember things for each room. To people it's simply "the room's memory". Behind the scenes it's a wiki, after Andrej Karpathy's ["LLM Wiki"](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) idea: instead of digging through chat history, the model keeps linked Markdown pages (people, places, topics, events, notes) and keeps them current.
@@ -116,7 +130,7 @@ Setup: `openssl rand -base64 32`, then store the value in `.env` and as the Tinf
 
 ### Topic prompts
 
-`prompts/` holds one Markdown file per kind of request: `digital-security`, `legal`, `history`, `debate` and `nonviolent-action` so far. `nonviolent-action` is a trainer for movement and rights organizing, built on Gene Sharp's 198 methods of nonviolent action and the CANVAS Core Curriculum (vision of tomorrow, pillars of support, mechanisms of change, dilemma actions, fear management, nonviolent discipline, security culture). `debate` turns the bot into a Tibetan monastic debate partner: it challenges your thesis one consequence at a time ("take X: it follows that..., because..."), you answer "I accept", "the reason isn't established", "it doesn't follow" or "why?", and it claps (👏 "Tsa!") when you contradict yourself. Ask to swap roles to be the challenger. Before each reply, a quick model call reads the message (and the previous exchange, so follow-ups keep their topic) and picks the matching topic, or none. That file's guidance is added to the system prompt. This works in any language, and adds about half a second per message. The log shows `Topic: <name>` for each message, and `/health` lists the loaded topics.
+`prompts/` holds one Markdown file per kind of request: `digital-security`, `legal`, `history`, `debate`, `nonviolent-action` and `osint` so far. `osint` is an open-source investigation and media forensics guide for journalists, researchers, human rights and legal investigators; it works with the [inspect_media](#media-forensics) tool. `nonviolent-action` is a trainer for movement and rights organizing, built on Gene Sharp's 198 methods of nonviolent action and the CANVAS Core Curriculum (vision of tomorrow, pillars of support, mechanisms of change, dilemma actions, fear management, nonviolent discipline, security culture). `debate` turns the bot into a Tibetan monastic debate partner: it challenges your thesis one consequence at a time ("take X: it follows that..., because..."), you answer "I accept", "the reason isn't established", "it doesn't follow" or "why?", and it claps (👏 "Tsa!") when you contradict yourself. Ask to swap roles to be the challenger. Before each reply, a quick model call reads the message (and the previous exchange, so follow-ups keep their topic) and picks the matching topic, or none. That file's guidance is added to the system prompt. This works in any language, and adds about half a second per message. The log shows `Topic: <name>` for each message, and `/health` lists the loaded topics.
 
 To add a topic, add a file with a `name` and a one-line `description` (what the classifier sees) and the guidance as the body. [prompts/README.md](prompts/README.md) has the format.
 
@@ -136,6 +150,7 @@ With `WEB_SEARCH=true` (the default) the bot asks for [Tinfoil web search](https
 | Document (PDF, DOCX, PPTX, XLSX, CSV, text…) | Sent to Tinfoil, which converts it inside the enclave and passes it to the model. |
 | Audio / voice message | Transcribed with the speech-to-text model; the transcript goes to the model. |
 | Video | Its audio track is transcribed (frames are not analysed). |
+| Zip archive | Not readable by the model; `inspect_media` can list and check it (e.g. a ProofMode proof bundle). |
 
 **Prompts:** any text sent with the attachment (its caption) is used as the instruction, e.g. an image captioned "translate the sign". With no text, the bot first waits a few seconds, because many apps send the note about a file as a separate message (often as a thread reply on the file); if one arrives, the file and the note are answered together. Otherwise it describes images, summarises documents and videos, and replies to voice messages. Some apps do it the other way round: they send the text first, then the file as a thread reply on that text. If the file arrives while the text is still being answered, the bot restarts the answer with the file included; if the answer already went out, the file is answered using that text. Replying to a file, or writing in a thread that starts with one, also brings that file into the request. The bot always answers in the main timeline, as separate messages (quoting the thread's first message when yours was in a thread), so answers aren't hidden inside threads. Multi-image "gallery" messages are handled as one request. Placeholder texts some apps send with media (e.g. "Sent 1 media items.") are ignored. With `MATRIX_COMMAND_PREFIX` set, the caption must start with the prefix.
 
@@ -210,13 +225,15 @@ src/
   prompts.js topic prompts: loading and per-message classification
   split.js   splits long replies into several messages
   pdf.js     PDF documents: Markdown -> HTML -> PDF with WeasyPrint
+  forensics.js  inspect_media: C2PA (c2patool), metadata (exiftool), ProofMode bundles (proofmode)
   wiki.js    room wikis: encrypted storage in Matrix, the model's wiki tools
   wiki-schema.md  the rules the model follows for each wiki
   cross-signing.js  signs the bot's new devices (setup: npm run cross-signing)
 speech/      Tibetan TTS/STT sidecar (Python, ONNX Runtime)
   login.js   one-off: print an access token
 docs/        research notes (Tibetan speech model comparison)
-prompts/     topic guidance (digital security, legal, history, debate, nonviolent action)
+prompts/     topic guidance (digital security, legal, history, debate, nonviolent action, osint)
+c2pa-trust/  C2PA trust lists used by c2patool (refresh: npm run c2pa-trust)
 test/        offline tests: npm test (no network or keys)
 CLAUDE.md    working notes for AI coding sessions (deploys, gotchas, testing)
 TODO.md      follow-ups (testing, licensing, reply model)

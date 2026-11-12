@@ -115,3 +115,61 @@ test("PDF documents: title handling, sanitizing, file names", async () => {
     // Rendering itself needs WeasyPrint (installed in the Docker image).
     if (await pdfAvailable()) assert.equal((await renderPdf("t", "བོད་ཡིག")).subarray(0, 4).toString(), "%PDF");
 });
+
+test("media forensics: inspect_media reports hash, Content Credentials and zip contents", async () => {
+    const { forensicsTools, inspectAttachment, isZip, runInspectTool } = await import("../src/forensics.js");
+    const { readFile } = await import("node:fs/promises");
+    const { zipSync } = await import("fflate");
+    assert.match(await runInspectTool([], {}, {}), /No file is attached/);
+    const jpg = { filename: "c2pa-sample.jpg", mimetype: "image/jpeg", data: await readFile(new URL("fixtures/c2pa-sample.jpg", import.meta.url)) };
+    assert.match(await runInspectTool([jpg], { filename: "other.png" }, {}), /No attached file matches/);
+    const zip = { filename: "bundle.zip", mimetype: "application/octet-stream", data: Buffer.from(zipSync({ "c2pa-sample.jpg": new Uint8Array(jpg.data), "x.proof.json": new TextEncoder().encode("{}") })) };
+    assert.ok(isZip(zip) && !isZip(jpg));
+    // The rest needs c2patool and exiftool (installed in the Docker image).
+    const tools = await forensicsTools();
+    if (!tools) return;
+    const r = await inspectAttachment(jpg, tools);
+    assert.equal(r.sha256, crypto.createHash("sha256").update(jpg.data).digest("hex"));
+    assert.equal(r.content_credentials.present, true);
+    assert.equal(r.content_credentials.validation_state, "Valid", "signed by c2patool's sample certificate, which isn't on a trust list");
+    assert.ok(r.content_credentials.failures.some((f) => f.startsWith("signingCredential.untrusted")));
+    assert.equal(r.metadata["File:FileType"], "JPEG");
+    const plain = await inspectAttachment({ filename: "p.png", mimetype: "image/png", data: Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c63f8cfc0f01f00050001ff89993d1d0000000049454e44ae426082", "hex") }, tools);
+    assert.equal(plain.content_credentials.present, false);
+    const z = await inspectAttachment(zip, tools);
+    assert.ok(z.contents.some((c) => c.startsWith("c2pa-sample.jpg")));
+    assert.equal(z.content_credentials["c2pa-sample.jpg"].validation_state, "Valid");
+    assert.match(await runInspectTool([jpg], {}, tools), /^Inspection report[\s\S]*"validation_state": "Valid"/);
+});
+
+test("media forensics: proofmode check report is trimmed to what matters", async () => {
+    const { proofcheckSummary } = await import("../src/forensics.js");
+    const raw = {
+        metadata: { fileCount: 1 },
+        keys: [{ key: Array(3000).fill(45) }],
+        files: [
+            {
+                name: "a.jpg",
+                hash: "ab".repeat(32),
+                mimeType: "image/jpeg",
+                data: Array(100000).fill(1),
+                json: { device: { model: "Pixel 9" } },
+                integrity: {
+                    pgp: { media: { verified: true, key_id: "8b9b", key: Array(3000).fill(1), details: "" }, json: { verified: true, key_id: "8b9b" } },
+                    c2pa: { manifest_info: { big: "x".repeat(5000) } },
+                    opentimestamps: { verified: true, digest_type: "SHA256", timestamp: "x\n result attested by Pending: update URI https://a.example\n result attested by Pending: update URI https://a.example\n" },
+                },
+            },
+        ],
+        errors: [],
+        integrity: { pgp: { media: 1, proof: 1 }, c2pa: 1, opentimestamps: 1 },
+        consistency: { verified: false, summary: { totalFlags: 1 } },
+        synchrony: { verified: true },
+    };
+    const s = proofcheckSummary(raw);
+    assert.ok(JSON.stringify(s).length < 2000);
+    assert.equal(s.files[0].sha256, "ab".repeat(32));
+    assert.deepEqual(s.files[0].pgp_signature.media, { verified: true, key_id: "8b9b", details: "" });
+    assert.deepEqual(s.files[0].opentimestamps.attestations, ["Pending: update URI https://a.example"]);
+    assert.equal(s.consistency.verified, false);
+});

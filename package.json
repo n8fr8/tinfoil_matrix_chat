@@ -10,6 +10,7 @@
     "login": "node --env-file-if-exists=.env src/login.js",
     "cross-signing": "node --env-file-if-exists=.env src/cross-signing-setup.js",
     "probe": "node --env-file-if-exists=.env src/probe.js",
+    "c2pa-trust": "c2patool --settings c2pa-trust/c2pa.toml init trust --legacy",
     "test": "FILE_NOTE_WAIT_MS=300 node --test 'test/*.test.js'"
   },
   "engines": {

@@ -90,6 +90,8 @@ export function loadConfig() {
         wikiMaxBytes: (env.WIKI_MAX_MB ? Number(env.WIKI_MAX_MB) : 20) * 1024 * 1024,
         // PDF documents on request (create_pdf tool); needs WeasyPrint (in the image).
         pdfDocuments: bool(env.PDF_DOCUMENTS, true),
+        // inspect_media tool: C2PA, metadata and ProofMode checks of attachments; needs c2patool and exiftool (in the image).
+        mediaForensics: bool(env.MEDIA_FORENSICS, true),
         // Longer replies are split into several messages.
         messageMaxChars: env.CHAT_MESSAGE_MAX_CHARS ? Number(env.CHAT_MESSAGE_MAX_CHARS) : 1500,
         // Voice replies are split into several voice messages of at most this

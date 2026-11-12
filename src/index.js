@@ -18,6 +18,7 @@ import { parseCrossSigningKey, signOwnDevice } from "./cross-signing.js";
 import { loadPrompts, PromptLibrary } from "./prompts.js";
 import { defaultSchema, WikiStore } from "./wiki.js";
 import { pdfAvailable } from "./pdf.js";
+import { forensicsTools } from "./forensics.js";
 import { resolveCredentials } from "./auth.js";
 import { ChatClient, createTinfoilClient, forSpeech } from "./melong.js";
 import { splitMessage, weightedLength } from "./split.js";
@@ -66,6 +67,7 @@ async function main() {
                 ...(status.prompts ? { prompts: status.prompts } : {}),
                 ...(status.wiki !== undefined ? { wiki: status.wiki } : {}),
                 ...(status.pdf !== undefined ? { pdf: status.pdf } : {}),
+                ...(status.forensics !== undefined ? { mediaForensics: status.forensics || false } : {}),
                 ...(status.speechStatus ? { speechSidecar: status.speechStatus } : {}),
                 ...(status.error ? { error: status.error } : {}),
             };
@@ -170,6 +172,7 @@ async function startBot(status, startedAt) {
         wikiSchema: await defaultSchema(),
         wikiMaxBytes: config.wikiMaxBytes,
         pdf: (status.pdf = config.pdfDocuments && (await pdfAvailable())),
+        forensics: (status.forensics = config.mediaForensics ? await forensicsTools() : null),
     });
 
     // Cache our own user id so we can ignore our own messages without an await per event.

@@ -28,6 +28,7 @@ src/melong.js         ChatClient: system prompt, Tinfoil chat calls, tool loop, 
 src/media.js          attachment download/decrypt, ffmpeg conversion, voice message encoding, uploads
 src/split.js          splits long replies into several text / voice messages
 src/pdf.js            PDF documents: create_pdf tool, Markdown -> sanitized HTML -> WeasyPrint
+src/forensics.js      inspect_media tool: sha256, c2patool (C2PA + trust lists), exiftool, proofmode check for zips
 src/prompts.js        topic prompts: loads prompts/*.md, classifies each message
 src/wiki.js           room memory: encrypted storage in Matrix, wiki tools for the model
 src/wiki-schema.md    the rules the model follows for each room's wiki (copied in as SCHEMA.md)
@@ -37,7 +38,8 @@ src/auth.js           password login, token cache, old-device cleanup
 src/health.js         /health and /diag (?inference=1, ?speech=1) endpoints
 src/format.js         Markdown -> Matrix HTML
 speech/               Tibetan STT/TTS sidecar (Python, ONNX Runtime, CPU), its own container
-prompts/              topic prompts (digital-security, legal, history, debate, nonviolent-action); README explains the format
+prompts/              topic prompts (digital-security, legal, history, debate, nonviolent-action, osint); README explains the format
+c2pa-trust/           C2PA trust lists (official + legacy interim), vendored so the attested image has a fixed trust store
 docs/                 research notes: tibetan-speech-models.md, multi-account-spec.md (on hold)
 test/                 offline tests (npm test)
 tinfoil-config.yml    the measured container config (public; no secret values)
@@ -49,7 +51,7 @@ tinfoil-config.yml    the measured container config (public; no secret values)
 1. `handleMessage` (index.js) ignores the bot's own messages and anything older than startup. Media go to `handleAttachments`; text has reply quotes stripped and runs `!reset` / `!memory` commands.
 2. The replied-to message (or thread root) is fetched with `quotedMessage`: its text becomes context, or its file becomes an attachment.
 3. `respond` downloads attachments, then `chatWithWiki` takes the room's memory lock and calls `ChatClient.chat`.
-4. `chat` (melong.js): audio is transcribed (`transcribeForModel`). The topic classifier picks a prompt. The system prompt is built (base + topic guidance + room memory instructions + voice/Tibetan rules), then the model is called with web search on and the wiki tools. Tool rounds repeat until it answers.
+4. `chat` (melong.js): audio is transcribed (`transcribeForModel`). The topic classifier picks a prompt. The system prompt is built (base + topic guidance + room memory instructions + voice/Tibetan rules), then the model is called with web search on and its tools (wiki, create_pdf, and inspect_media when the message has attachments). Tool rounds repeat until it answers.
 5. The reply is split (`split.js`) and sent as text messages in the main timeline, followed by any PDFs the model made with `create_pdf`. For voice input, or when asked, it is also sent as voice messages (`sendVoiceReplies`). The wiki is saved if it changed.
 
 ## Behaviors that look odd but are deliberate
@@ -72,6 +74,8 @@ tinfoil-config.yml    the measured container config (public; no secret values)
 - Writes happen only when someone asks ("remember this", `!memory add`); otherwise the model may offer once.
 - User-facing replies never mention pages or files.
 - A wrong key makes the bot refuse to load the memory, rather than overwrite it.
+
+**Media forensics (`inspect_media`, src/forensics.js):** only offered when the message has attachments, and only over those files (the history keeps text notes, not files). c2patool is run with `--settings c2pa-trust/c2pa.toml`: that file doesn't exist, but c2patool loads the trust list files next to it; without them every signer shows as untrusted. Zips aren't sent to the model as files (it can't read them); they get a text note pointing at the tool. Tool output is framed as untrusted data, since metadata text comes from whoever made the file. c2patool and proofmode are built from source in a Rust stage of the Dockerfile because the c2patool release binaries need glibc 2.39 (Debian 12 has 2.36).
 
 **Topic prompts:** one quick classifier call per message (the reply model, about 0.5 s) picks a `prompts/*.md` file using its `description`, with the previous exchange as context so follow-ups such as "I accept" keep their topic.
 
@@ -134,3 +138,4 @@ See TODO.md. In short:
 - Monlam Melong as a Tibetan reply model, if Tinfoil hosts it.
 - Multi-account support (spec in docs/, on hold).
 - Room memory limits: old uploads pile up, the blue-green write window, and anyone can clear a room's memory.
+- Media forensics: real-world tests, OpenTimestamps without network access, refreshing the C2PA trust lists.

@@ -21,6 +21,7 @@ import { splitByScript } from "./speech.js";
 import { LogService } from "matrix-bot-sdk";
 import { WIKI_TOOLS, runWikiTool, wikiInstructions } from "./wiki.js";
 import { PDF_INSTRUCTIONS, PDF_TOOL, pdfFilename, renderPdf } from "./pdf.js";
+import { INSPECT_INSTRUCTIONS, INSPECT_TOOL, isZip, runInspectTool } from "./forensics.js";
 
 // Builds the Tinfoil SDK client. By default the SDK asks Tinfoil's attestation
 // service for a router and gets a random one (e.g. router-0.tinfoil.sh or
@@ -124,11 +125,13 @@ export class ChatClient {
         wikiSchema = "", // default SCHEMA.md, for rooms without a wiki yet
         wikiMaxBytes = 20 * 1024 * 1024,
         pdf = false, // offer the create_pdf tool (needs WeasyPrint)
+        forensics = null, // installed media forensics tools ({c2patool, exiftool, proofmode}); offers inspect_media
     } = {}) {
         this.prompts = prompts;
         this.wikiSchema = wikiSchema;
         this.wikiMaxBytes = wikiMaxBytes;
         this.pdf = pdf;
+        this.forensics = forensics;
         this.webSearch = webSearch;
         this.detectModel = detectModel;
         this.detectThreshold = detectThreshold;
@@ -268,6 +271,10 @@ export class ChatClient {
                 const t = await this.transcribeForModel(a);
                 parts.push({ type: "text", text: t });
                 notes.push(t);
+            } else if (isZip(a)) {
+                // The model can't read archives; inspect_media can (e.g. ProofMode proof bundles).
+                parts.push({ type: "text", text: `[Attached archive: ${a.filename}, ${a.data.length} bytes. The inspect_media tool can check it.]` });
+                notes.push(`[Shared a file: ${a.filename}]`);
             } else {
                 parts.push({ type: "file", file: { filename: a.filename, file_data: dataUrl(a) } });
                 notes.push(`[Shared a file: ${a.filename}]`);
@@ -279,11 +286,13 @@ export class ChatClient {
         // Topic guidance (prompts/*.md) for this kind of request, if any. Topic
         // text goes before the voice/Tibetan rules so those have the last word.
         const topic = await this.prompts?.classify([...notes, text].filter(Boolean).join("\n\n") || prompt, recentContext(history), opts);
+        const inspect = Boolean(this.forensics && attachments.length);
         const system =
             this.systemPrompt +
             (topic ? `\n\nGuidance for this kind of request (${topic.name}):\n${topic.body}` : "") +
             (opts.wiki ? wikiInstructions(opts.wiki, this.wikiSchema) + (WIKI_TASKS[opts.wikiTask] || "") : "") +
             (this.pdf ? PDF_INSTRUCTIONS : "") +
+            (inspect ? INSPECT_INSTRUCTIONS : "") +
             (spokenInput ? SPOKEN_INPUT_INSTRUCTIONS : VOICE_INSTRUCTIONS) +
             TIBETAN_SPEECH_INSTRUCTIONS[this.speechStt];
         const userMsg = parts.length
@@ -292,7 +301,7 @@ export class ChatClient {
 
         // With a wiki, the model may call wiki tools for a few rounds before answering.
         const messages = [{ role: "system", content: system }, ...history, userMsg];
-        const toolList = [...(opts.wiki ? WIKI_TOOLS : []), ...(this.pdf ? [PDF_TOOL] : [])];
+        const toolList = [...(opts.wiki ? WIKI_TOOLS : []), ...(this.pdf ? [PDF_TOOL] : []), ...(inspect ? [INSPECT_TOOL] : [])];
         const tools = toolList.length ? { tools: toolList } : {};
         const files = []; // documents made with create_pdf, attached after the reply
         const started = Date.now();
@@ -315,7 +324,7 @@ export class ChatClient {
             const message = completion?.choices?.[0]?.message;
             const calls = message?.tool_calls || [];
             if (!toolList.length || !calls.length) break;
-            if (round > MAX_TOOL_ROUNDS) throw new Error(`the model was still working on the wiki after ${MAX_TOOL_ROUNDS} rounds; try a smaller request`);
+            if (round > MAX_TOOL_ROUNDS) throw new Error(`the model was still using tools after ${MAX_TOOL_ROUNDS} rounds; try a smaller request`);
             messages.push(message);
             for (const call of calls) {
                 let args = {};
@@ -325,10 +334,12 @@ export class ChatClient {
                 const result =
                     call.function?.name === "create_pdf"
                         ? await this.makePdf(args, files)
-                        : opts.wiki
+                        : call.function?.name === "inspect_media" && inspect
+                          ? await runInspectTool(attachments, args, this.forensics)
+                          : opts.wiki
                           ? await runWikiTool(opts.wiki, call.function?.name, args, { maxBytes: this.wikiMaxBytes })
                           : `Unknown tool ${call.function?.name}.`;
-                LogService.debug("melong", `Wiki tool ${call.function?.name}(${args.path || args.query || args.title || ""}) -> ${result.slice(0, 80)}`);
+                LogService.debug("melong", `Tool ${call.function?.name}(${args.path || args.query || args.title || ""}) -> ${result.slice(0, 80)}`);
                 messages.push({ role: "tool", tool_call_id: call.id, content: result });
             }
         }
