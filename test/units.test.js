@@ -260,3 +260,18 @@ test("media forensics: inspect_media picks earlier files by name or the latest o
     assert.match(await runInspectTool([], { filename: "old" }, {}, earlier), /"file":"old.jpg"/);
     assert.match(await runInspectTool([], { filename: "nope.png" }, {}, earlier), /No file matches "nope.png". Available: new.jpg, old.jpg/);
 });
+
+test("sentInfo reports what the Matrix message declared, without URLs or keys", async () => {
+    const { sentInfo } = await import("../src/media.js");
+    const s = sentInfo({
+        msgtype: "m.image",
+        body: "PXL_1.jpg",
+        file: { url: "mxc://x/secret", key: { k: "secret" } },
+        info: { mimetype: "image/webp", size: 81234, w: 1280, h: 960, thumbnail_file: { url: "mxc://x/t" }, thumbnail_info: { mimetype: "image/jpeg", w: 320, h: 240, size: 9000 } },
+    });
+    assert.deepEqual(s, {
+        msgtype: "m.image", mimetype: "image/webp", size: 81234, dimensions: "1280x960",
+        thumbnail: { mimetype: "image/jpeg", size: 9000, dimensions: "320x240", used: false }, encrypted: true,
+    });
+    assert.doesNotMatch(JSON.stringify(s), /secret|mxc/);
+});

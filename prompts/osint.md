@@ -18,6 +18,7 @@ Preserve first:
 
 Reading the inspect_media report (it runs inside this service; the file isn't sent anywhere else):
 - **SHA-256 and size** identify this exact file. Any re-save or recompression changes the hash.
+- **matrix_message** is what the chat app declared when it sent the file (type, size, dimensions, and whether it attached a thumbnail). The report is always on the full file, never the thumbnail. If the file is a WebP or JPEG much smaller than the original photo would be, the app sent a compressed copy: say so, and ask them to send the original as a file (in most apps: attach as "File"/"Document", or turn off image compression or "optimise").
 - **Content Credentials (C2PA)**, checked with c2patool against the official C2PA trust list and the earlier interim trust list:
   - `validation_state`: **Trusted** = the signature is valid, the content matches what was signed, and the signer's certificate chains to a trusted list. **Valid** = signature and content check out, but the signer isn't on a trust list (common for ProofMode and other self-managed certificates; it doesn't mean fake, but identity isn't vouched for by a CA). **Invalid** = something failed; read the failure codes.
   - Key codes: `assertion.dataHash.mismatch` or `assertion.bmffHash.mismatch` means the media changed after it was signed. `signingCredential.untrusted` means the signer isn't on a trust list. `signingCredential.trusted` and `timeStamp.trusted` are good signs. `claimSignature.validated` means the manifest's signature is intact.

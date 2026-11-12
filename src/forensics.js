@@ -453,6 +453,7 @@ export async function inspectAttachment(a, tools = {}) {
             size_bytes: a.data.length,
             sha256: createHash("sha256").update(a.data).digest("hex"),
         };
+        if (a.sent) report.matrix_message = a.sent;
         if (isZip(a)) {
             report.kind = "zip archive (possibly a ProofMode proof bundle)";
             const { files, zips, errors } = unpackArchive(a.data);
@@ -509,6 +510,10 @@ export async function inspectAttachment(a, tools = {}) {
                 report.note =
                     "No Content Credentials and no camera metadata. Typical of photos and videos that a chat app recompressed (sent as an image " +
                     "rather than as a file), screenshots, and files saved from social media. Absence proves nothing either way; ask for the original, sent as a file.";
+            }
+            if (a.sent && /^image\/webp$/i.test(a.mimetype) && !/\.webp$/i.test(a.filename)) {
+                report.note = (report.note ? report.note + " " : "") +
+                    "The chat app converted this to WebP before sending: this is the app's compressed copy, not the original file.";
             }
         }
         return report;

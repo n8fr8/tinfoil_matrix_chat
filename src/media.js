@@ -72,6 +72,24 @@ export async function downloadAttachment(client, content) {
         data: Buffer.from(data),
         mimetype: content.info?.mimetype || "application/octet-stream",
         filename: attachmentFilename(content),
+        sent: sentInfo(content),
+    };
+}
+
+// What the Matrix message itself says about the file (no URLs or keys), so the
+// inspect_media report can show whether the app sent the original or a
+// compressed copy, and that the bot used the full file rather than the thumbnail.
+export function sentInfo(content) {
+    const info = content.info || {};
+    const dims = (i) => (i?.w && i?.h ? `${i.w}x${i.h}` : undefined);
+    const thumb = info.thumbnail_info || info.thumbnail_file || info.thumbnail_url ? info.thumbnail_info || {} : null;
+    return {
+        msgtype: content.msgtype,
+        mimetype: info.mimetype,
+        size: info.size,
+        dimensions: dims(info),
+        thumbnail: thumb && { mimetype: thumb.mimetype, size: thumb.size, dimensions: dims(thumb), used: false },
+        encrypted: Boolean(content.file?.url),
     };
 }
 

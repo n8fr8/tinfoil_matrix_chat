@@ -555,7 +555,11 @@ async function respond(client, chat, config, roomId, event, text, attachmentCont
     const keepTyping = setInterval(typing, 45000);
     try {
         const attachments = [];
-        for (const c of attachmentContents) attachments.push(await downloadAttachment(client, c));
+        for (const c of attachmentContents) {
+            const a = await downloadAttachment(client, c);
+            LogService.info("melong", `Attachment ${a.kind} ${a.mimetype} ${a.data.length} bytes; message declared ${JSON.stringify(a.sent)}`);
+            attachments.push(a);
+        }
         const reply = await chatWithWiki(chat, roomId, text, attachments, wikiTask, signal);
         // Superseded by a file that arrived for this message: a new answer covers both.
         if (signal?.aborted) return;
