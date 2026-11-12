@@ -52,6 +52,8 @@ npm start
 
 Then invite the bot to a room (it auto-joins) and send a message. With `MATRIX_COMMAND_PREFIX` empty it replies to everything; set it to e.g. `!ai` to only respond to `!ai <message>` (recommended for busy group rooms).
 
+`npm test` runs the offline tests (message and attachment handling, message splitting, cross-signing, room memory); they need no network or keys.
+
 ## Configuration
 
 All settings come from environment variables (loaded from `.env`). See [`.env.example`](.env.example) for the full list. Key ones:
@@ -202,6 +204,8 @@ speech/      Tibetan TTS/STT sidecar (Python, ONNX Runtime)
   login.js   one-off: print an access token
 docs/        research notes (Tibetan speech model comparison)
 prompts/     topic guidance (digital security, legal, history, debate)
+test/        offline tests: npm test (no network or keys)
+CLAUDE.md    working notes for AI coding sessions (deploys, gotchas, testing)
 TODO.md      follow-ups (testing, licensing, reply model)
 ```
 

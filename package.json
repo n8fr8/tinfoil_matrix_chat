@@ -9,7 +9,8 @@
     "start": "node --env-file-if-exists=.env src/index.js",
     "login": "node --env-file-if-exists=.env src/login.js",
     "cross-signing": "node --env-file-if-exists=.env src/cross-signing-setup.js",
-    "probe": "node --env-file-if-exists=.env src/probe.js"
+    "probe": "node --env-file-if-exists=.env src/probe.js",
+    "test": "FILE_NOTE_WAIT_MS=300 node --test 'test/*.test.js'"
   },
   "engines": {
     "node": ">=20.11.0"

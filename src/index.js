@@ -511,7 +511,7 @@ const inflight = new Map();
 const TEXT_THEN_FILE_MS = 15000;
 
 // Captionless files waiting for a follow-up note, by "room|sender".
-const FILE_NOTE_WAIT_MS = 6000;
+const FILE_NOTE_WAIT_MS = Number(process.env.FILE_NOTE_WAIT_MS) || 6000; // shorter in tests
 const pendingFiles = new Map();
 
 function removePending(key, entry) {
