@@ -2,6 +2,9 @@
 // so they can be sent to Tinfoil.
 
 import { spawn } from "node:child_process";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { createDecipheriv, createHash, timingSafeEqual } from "node:crypto";
 import { LogService } from "matrix-bot-sdk";
 
@@ -109,6 +112,45 @@ function ffmpeg(args, input) {
         ff.stdin.on("error", () => {}); // ffmpeg may close stdin early on bad input
         ff.stdin.end(input);
     });
+}
+
+// Runs ffmpeg on a file (seekable input, unlike ffmpeg() above); resolves {code, stdout: Buffer, stderr}.
+function ffmpegFile(args) {
+    return new Promise((resolve, reject) => {
+        const ff = spawn("ffmpeg", ["-hide_banner", ...args]);
+        const out = [];
+        const errs = [];
+        ff.stdout.on("data", (c) => out.push(c));
+        ff.stderr.on("data", (c) => errs.push(c));
+        ff.on("error", reject);
+        ff.on("close", (code) => resolve({ code, stdout: Buffer.concat(out), stderr: Buffer.concat(errs).toString() }));
+    });
+}
+
+/**
+ * Still frames from across a video (at 10%, 35%, 60% and 85% of its length),
+ * as JPEGs at most 1280 px wide/high, so the model can see what a video shows.
+ * @returns {Promise<Array<{filename:string, data:Buffer, mimetype:string, at:number}>>}
+ */
+export async function videoFrames({ data, filename }, count = 4) {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "melong-frames-"));
+    try {
+        const src = path.join(dir, "video");
+        await writeFile(src, data);
+        const probe = await ffmpegFile(["-i", src]);
+        const m = /Duration: (\d+):(\d+):(\d+(?:\.\d+)?)/.exec(probe.stderr);
+        const duration = m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) : 0;
+        const times = duration > 0 ? Array.from({ length: count }, (_, i) => duration * (0.1 + (0.75 * i) / Math.max(count - 1, 1))) : [0];
+        const scale = "scale='if(gt(iw,ih),min(1280,iw),-2)':'if(gt(iw,ih),-2,min(1280,ih))'";
+        const frames = [];
+        for (const t of times) {
+            const r = await ffmpegFile(["-loglevel", "error", "-ss", t.toFixed(2), "-i", src, "-frames:v", "1", "-vf", scale, "-c:v", "mjpeg", "-q:v", "4", "-f", "image2", "pipe:1"]);
+            if (r.code === 0 && r.stdout.length) frames.push({ filename: `${filename} @ ${t.toFixed(1)}s`, data: r.stdout, mimetype: "image/jpeg", at: t });
+        }
+        return frames;
+    } finally {
+        await rm(dir, { recursive: true, force: true });
+    }
 }
 
 // Converts audio (or a video's audio track) to MP3, since the transcription

@@ -16,7 +16,7 @@
 //            server-side inside the enclave
 
 import { TinfoilAI } from "tinfoil";
-import { pcm16kToWav, toMp3, toPcm16kMono } from "./media.js";
+import { pcm16kToWav, toMp3, toPcm16kMono, videoFrames } from "./media.js";
 import { splitByScript } from "./speech.js";
 import { LogService } from "matrix-bot-sdk";
 import { WIKI_TOOLS, runWikiTool, wikiInstructions } from "./wiki.js";
@@ -149,10 +149,30 @@ export class ChatClient {
         this.timeoutMs = timeoutMs;
         this.client = client || createTinfoilClient();
         this.histories = new Map();
+        // Recent attachments per room, so follow-up questions ("is that photo
+        // authentic?") can still be checked with inspect_media. In memory only.
+        this.recentFiles = new Map();
     }
 
     reset(conversationId) {
         this.histories.delete(conversationId);
+        this.recentFiles.delete(conversationId);
+    }
+
+    // Earlier attachments in this room, newest first, dropping old ones.
+    recentAttachments(conversationId) {
+        const fresh = (this.recentFiles.get(conversationId) || []).filter((f) => Date.now() - f.ts < RECENT_FILES_MS);
+        this.recentFiles.set(conversationId, fresh);
+        return fresh;
+    }
+
+    rememberAttachments(conversationId, attachments) {
+        if (!attachments.length) return;
+        let total = 0;
+        const list = [...attachments.map((a) => ({ ...a, ts: Date.now() })), ...this.recentAttachments(conversationId)]
+            .slice(0, RECENT_FILES_MAX)
+            .filter((f) => (total += f.data.length) <= RECENT_FILES_MAX_BYTES);
+        this.recentFiles.set(conversationId, list);
     }
 
     // Speech-to-text with Tinfoil. Converts to MP3 first unless it already is
@@ -267,7 +287,21 @@ export class ChatClient {
             if (a.kind === "image") {
                 parts.push({ type: "image_url", image_url: { url: dataUrl(a) } });
                 notes.push(`[Shared an image: ${a.filename}]`);
-            } else if (a.kind === "audio" || a.kind === "video") {
+            } else if (a.kind === "video") {
+                // Frames from across the video, plus its soundtrack's transcript. Many
+                // videos (e.g. evidence footage) have no usable audio: that's not an error.
+                const [frames, transcript] = await Promise.all([
+                    videoFrames(a).catch((err) => (LogService.warn("melong", `Video frames failed: ${err.message}`), [])),
+                    this.transcribeForModel(a).catch((err) => `[No transcript for video "${a.filename}": it may have no audio track (${String(err?.message || err).slice(0, 120)})]`),
+                ]);
+                if (frames.length) parts.push({ type: "text", text: `[Video "${a.filename}": ${frames.length} still frames from across it follow, then its soundtrack.]` });
+                for (const f of frames) {
+                    parts.push({ type: "text", text: `[${f.filename}]` });
+                    parts.push({ type: "image_url", image_url: { url: dataUrl(f) } });
+                }
+                parts.push({ type: "text", text: transcript });
+                notes.push(`[Shared a video: ${a.filename}]`, transcript);
+            } else if (a.kind === "audio") {
                 const t = await this.transcribeForModel(a);
                 parts.push({ type: "text", text: t });
                 notes.push(t);
@@ -293,13 +327,15 @@ export class ChatClient {
         // Topic guidance (prompts/*.md) for this kind of request, if any. Topic
         // text goes before the voice/Tibetan rules so those have the last word.
         const topic = await this.prompts?.classify([...notes, text].filter(Boolean).join("\n\n") || prompt, recentContext(history), opts);
-        const inspect = Boolean(this.forensics && attachments.length);
+        // inspect_media covers this message's files and the room's recent ones.
+        const earlier = this.forensics ? this.recentAttachments(conversationId) : [];
+        const inspect = Boolean(this.forensics && (attachments.length || earlier.length));
         const system =
             this.systemPrompt +
             (topic ? `\n\nGuidance for this kind of request (${topic.name}):\n${topic.body}` : "") +
             (opts.wiki ? wikiInstructions(opts.wiki, this.wikiSchema) + (WIKI_TASKS[opts.wikiTask] || "") : "") +
             (this.pdf ? PDF_INSTRUCTIONS : "") +
-            (inspect ? INSPECT_INSTRUCTIONS : "") +
+            (inspect ? INSPECT_INSTRUCTIONS + earlierFilesNote(earlier) : "") +
             (spokenInput ? SPOKEN_INPUT_INSTRUCTIONS : VOICE_INSTRUCTIONS) +
             TIBETAN_SPEECH_INSTRUCTIONS[this.speechStt];
         const userMsg = parts.length
@@ -342,7 +378,7 @@ export class ChatClient {
                     call.function?.name === "create_pdf"
                         ? await this.makePdf(args, files)
                         : call.function?.name === "inspect_media" && inspect
-                          ? await runInspectTool(attachments, args, this.forensics)
+                          ? await runInspectTool(attachments, args, this.forensics, earlier)
                           : opts.wiki
                           ? await runWikiTool(opts.wiki, call.function?.name, args, { maxBytes: this.wikiMaxBytes })
                           : `Unknown tool ${call.function?.name}.`;
@@ -371,6 +407,8 @@ export class ChatClient {
             opts.wiki.appendLog(opts.wikiTask === "lint" ? "lint" : "update", text || prompt, [...opts.wiki.changed]);
         }
 
+        this.rememberAttachments(conversationId, attachments);
+
         // Remember this exchange (text-only), trimmed to the last N turns.
         const remembered = { role: "user", content: [...notes, prompt].join("\n\n") };
         const updated = [...history, remembered, { role: "assistant", content: out }];
@@ -395,6 +433,21 @@ export class ChatClient {
             return `The PDF couldn't be made (${err?.message || err}). Tell the user, and offer the content as text instead.`;
         }
     }
+}
+
+const RECENT_FILES_MS = 2 * 60 * 60 * 1000;
+const RECENT_FILES_MAX = 6;
+const RECENT_FILES_MAX_BYTES = 200 * 1024 * 1024;
+
+// Tells the model which earlier files inspect_media can still check.
+function earlierFilesNote(earlier) {
+    if (!earlier.length) return "";
+    const ago = (ts) => `${Math.max(1, Math.round((Date.now() - ts) / 60000))} min ago`;
+    return (
+        "\nFiles shared earlier in this room that inspect_media can also check (pass the file name): " +
+        earlier.map((f) => `"${f.filename}" (${f.kind}, ${ago(f.ts)})`).join(", ") +
+        ". If the user refers to an earlier photo, video or file, inspect it rather than saying you can't see it."
+    );
 }
 
 // Text to read aloud: drops Markdown links (web search citations) and bare URLs.

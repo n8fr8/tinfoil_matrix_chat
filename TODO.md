@@ -40,4 +40,4 @@ Follow-ups for the Tibetan voice features. Background and test results are in [d
   - `createdAt` in `.proof.json` is local time with a `Z` (UTC) suffix.
 - [ ] OpenTimestamps: the report shows each proof's attestations as stored in the bundle (often "Pending" at a calendar). Upgrading a pending proof to its Bitcoin anchor needs network access to the calendars, which the egress allowlist blocks. Consider allowing them.
 - [ ] The C2PA trust lists in `c2pa-trust/` are a snapshot; refresh them (`npm run c2pa-trust`) every release or two. The interim (legacy) list is being retired.
-- [ ] Only files in the current message (or the one replied to) can be inspected. Consider keeping the last few attachments per room for follow-up questions.
+- [ ] Recent files are kept in memory per room (6 files, 2 hours) for follow-up questions; they're lost on restart. Check that's enough in practice.

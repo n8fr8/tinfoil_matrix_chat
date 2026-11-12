@@ -504,6 +504,12 @@ export async function inspectAttachment(a, tools = {}) {
             const [c2pa, metadata] = await Promise.all([c2paReport(file), metadataReport(file)]);
             report.content_credentials = c2pa;
             report.metadata = metadata;
+            const camera = Object.keys(metadata || {}).some((k) => /:(Make|Model|DateTimeOriginal|GPSLatitude|CreateDate|MediaCreateDate)$/.test(k));
+            if (!c2pa?.present && !camera && /^(image|video)\//.test(a.mimetype)) {
+                report.note =
+                    "No Content Credentials and no camera metadata. Typical of photos and videos that a chat app recompressed (sent as an image " +
+                    "rather than as a file), screenshots, and files saved from social media. Absence proves nothing either way; ask for the original, sent as a file.";
+            }
         }
         return report;
     } finally {
@@ -516,13 +522,15 @@ export const INSPECT_TOOL = {
     function: {
         name: "inspect_media",
         description:
-            "Check the provenance and metadata of a file attached to the current message: SHA-256 hash, Content Credentials (C2PA) validated " +
+            "Check the provenance and metadata of a photo, video, audio file or zip attached to the current message or shared earlier in the room: SHA-256 hash, Content Credentials (C2PA) validated " +
             "against the C2PA trust lists, EXIF/XMP/IPTC metadata (camera, software, capture time, GPS), and for ProofMode proof bundles (zip) " +
             "the full ProofMode check (PGP signatures, OpenTimestamps, device attestation, consistency). Use it whenever someone asks whether a " +
             "file is authentic, edited or AI-generated, or where, when or how it was made, or asks for its metadata or credentials.",
         parameters: {
             type: "object",
-            properties: { filename: { type: "string", description: "Which attached file to inspect (default: all of them)" } },
+            properties: {
+                filename: { type: "string", description: "Which file to inspect (default: the files in this message, or else the most recent one)" },
+            },
         },
     },
 };
@@ -533,11 +541,19 @@ export const INSPECT_INSTRUCTIONS =
     "Explain the results in plain words, and mention privacy-sensitive findings such as GPS coordinates.";
 
 /** Runs the inspect_media tool over this message's attachments; returns the tool message text. */
-export async function runInspectTool(attachments, args, tools) {
+export async function runInspectTool(attachments, args, tools, earlier = []) {
     const wanted = String(args?.filename || "").trim();
-    const chosen = wanted ? attachments.filter((a) => a.filename === wanted || a.filename.includes(wanted)) : attachments;
-    if (!attachments.length) return "No file is attached to this message. Ask the user to send the file (as a file, to keep its metadata), or to reply to it.";
-    if (!chosen.length) return `No attached file matches "${wanted}". Attached: ${attachments.map((a) => a.filename).join(", ")}`;
+    const all = [...attachments, ...earlier];
+    if (!all.length) return "No file is attached to this message. Ask the user to send the file (as a file, to keep its metadata), or to reply to it.";
+    let chosen;
+    if (wanted) {
+        // Exact name first, then partial; this message's files before earlier ones (newest first).
+        const exact = all.filter((a) => a.filename === wanted);
+        chosen = exact.length ? exact.slice(0, 1) : all.filter((a) => a.filename.toLowerCase().includes(wanted.toLowerCase())).slice(0, 1);
+        if (!chosen.length) return `No file matches "${wanted}". Available: ${all.map((a) => a.filename).join(", ")}`;
+    } else {
+        chosen = attachments.length ? attachments : earlier.slice(0, 1); // default: this message's files, else the latest one
+    }
     const reports = [];
     for (const a of chosen.slice(0, 5)) {
         const started = Date.now();

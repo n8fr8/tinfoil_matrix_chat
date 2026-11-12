@@ -122,7 +122,7 @@ test("media forensics: inspect_media reports hash, Content Credentials and zip c
     const { zipSync } = await import("fflate");
     assert.match(await runInspectTool([], {}, {}), /No file is attached/);
     const jpg = { filename: "c2pa-sample.jpg", mimetype: "image/jpeg", data: await readFile(new URL("fixtures/c2pa-sample.jpg", import.meta.url)) };
-    assert.match(await runInspectTool([jpg], { filename: "other.png" }, {}), /No attached file matches/);
+    assert.match(await runInspectTool([jpg], { filename: "other.png" }, {}), /No file matches "other.png"/);
     const zip = { filename: "bundle.zip", mimetype: "application/octet-stream", data: Buffer.from(zipSync({ "c2pa-sample.jpg": new Uint8Array(jpg.data), "x.proof.json": new TextEncoder().encode("{}") })) };
     assert.ok(isZip(zip) && !isZip(jpg));
     // The rest needs c2patool and exiftool (installed in the Docker image).
@@ -215,4 +215,48 @@ test("media forensics: proofmode's huge JSON is streamed with byte arrays droppe
     assert.deepEqual(out.files[0].nested, [[1, 2], ["x"]]);
     assert.equal(out.files[0].name, 'a [1, 2] "q".jpg');
     assert.equal(out.ok, true);
+});
+
+test("chat: a silent video gets frames instead of failing; later messages can still inspect it", async () => {
+    const { ChatClient } = await import("../src/melong.js");
+    const { readFile } = await import("node:fs/promises");
+    const requests = [];
+    const client = {
+        chat: {
+            completions: {
+                async create(req) {
+                    requests.push(req);
+                    return { choices: [{ message: { role: "assistant", content: "ok" }, finish_reason: "stop" }] };
+                },
+            },
+        },
+        audio: { transcriptions: { async create() { return { text: "" }; } } },
+    };
+    const c = new ChatClient({ client, webSearch: false, forensics: { c2patool: "x", exiftool: "y" } });
+    const video = { kind: "video", mimetype: "video/mp4", filename: "street.mp4", data: await readFile(new URL("fixtures/silent.mp4", import.meta.url)) };
+    const r = await c.chat("!room", "what happens in this video?", [video]);
+    assert.equal(r.text, "ok");
+    const parts = requests[0].messages.at(-1).content;
+    assert.match(parts.at(-1).text, /No transcript for video "street.mp4"/, "no audio track is a note, not an error");
+    if (parts.some((p) => p.type === "image_url")) assert.equal(parts.filter((p) => p.type === "image_url").length, 4, "frames from across the video (ffmpeg installed)");
+    // A follow-up without an attachment still offers inspect_media, naming the earlier file.
+    await c.chat("!room", "is that video authentic?", []);
+    const follow = requests.at(-1);
+    assert.ok(follow.tools.some((t) => t.function.name === "inspect_media"));
+    assert.match(follow.messages[0].content, /Files shared earlier in this room[^\n]*"street.mp4" \(video/);
+    c.reset("!room");
+    await c.chat("!room", "hello", []);
+    assert.ok(!requests.at(-1).tools?.some((t) => t.function.name === "inspect_media"), "!reset forgets the files");
+});
+
+test("media forensics: inspect_media picks earlier files by name or the latest one", async () => {
+    const { runInspectTool } = await import("../src/forensics.js");
+    const earlier = [
+        { filename: "new.jpg", mimetype: "image/jpeg", data: Buffer.from("x") },
+        { filename: "old.jpg", mimetype: "image/jpeg", data: Buffer.from("y") },
+    ];
+    // No tools installed: the report comes back with errors, but shows which file was chosen.
+    assert.match(await runInspectTool([], {}, {}, earlier), /"file":"new.jpg"/);
+    assert.match(await runInspectTool([], { filename: "old" }, {}, earlier), /"file":"old.jpg"/);
+    assert.match(await runInspectTool([], { filename: "nope.png" }, {}, earlier), /No file matches "nope.png". Available: new.jpg, old.jpg/);
 });

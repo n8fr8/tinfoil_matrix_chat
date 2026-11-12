@@ -449,8 +449,10 @@ function mediaItems(content) {
     return [];
 }
 
-// Zip archives get a larger size limit: they are inspected, not sent to the model.
-const isArchive = (c) => /zip/.test(c.info?.mimetype || "") || /\.zip$/i.test(attachmentFilename(c));
+// Zip archives and videos get a larger size limit: they aren't sent to the model
+// whole (zips are inspected; videos become frames plus a soundtrack transcript).
+const isArchive = (c) =>
+    /zip/.test(c.info?.mimetype || "") || /\.zip$/i.test(attachmentFilename(c)) || c.msgtype === "m.video" || /^video\//.test(c.info?.mimetype || "");
 
 async function handleAttachments(client, chat, config, roomId, event, items) {
     const limit = (c) => (isArchive(c) ? config.maxArchiveBytes || config.maxAttachmentBytes : config.maxAttachmentBytes);
