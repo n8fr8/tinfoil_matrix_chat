@@ -138,8 +138,22 @@ test("media forensics: inspect_media reports hash, Content Credentials and zip c
     assert.equal(plain.content_credentials.present, false);
     const z = await inspectAttachment(zip, tools);
     assert.ok(z.contents.some((c) => c.startsWith("c2pa-sample.jpg")));
-    assert.equal(z.content_credentials["c2pa-sample.jpg"].validation_state, "Valid");
-    assert.match(await runInspectTool([jpg], {}, tools), /^Inspection report[\s\S]*"validation_state": "Valid"/);
+    assert.equal(z.media["c2pa-sample.jpg"].content_credentials.validation_state, "Valid", "one media file: full report");
+    // Nested zip with two photos and a sidecar: both bundles checked, brief per-media reports, sidecar shown.
+    const inner = zipSync({ "a.jpg": new Uint8Array(jpg.data), "b.jpg": new Uint8Array(jpg.data), "x.ipfs-cids.json": new TextEncoder().encode('{"cid":"bafy"}') });
+    const outer = { filename: "pack.zip", mimetype: "application/zip", data: Buffer.from(zipSync({ "inner.zip": inner, "c.jpg": new Uint8Array(jpg.data) })) };
+    const n = await inspectAttachment(outer, tools);
+    assert.deepEqual(n.nested_zips, ["inner.zip"]);
+    assert.deepEqual(Object.keys(n.media).sort(), ["c.jpg", "inner.zip/a.jpg", "inner.zip/b.jpg"]);
+    assert.equal(n.media["inner.zip/a.jpg"].content_credentials.validation_state, "Valid");
+    assert.ok(n.media["inner.zip/a.jpg"].content_credentials.signer, "brief C2PA keeps the signer");
+    assert.equal(n.other_files["inner.zip/x.ipfs-cids.json"], '{"cid":"bafy"}');
+    if (tools.proofmode) assert.deepEqual(Object.keys(n.proofmode_check), ["pack.zip", "inner.zip"]);
+    // Previews: downscaled JPEGs of photos inside (needs ffmpeg).
+    const { bundleImages } = await import("../src/forensics.js");
+    const previews = await bundleImages(outer, 2).catch(() => null);
+    if (previews?.length) assert.ok(previews.length === 2 && previews.every((p) => p.mimetype === "image/jpeg" && p.data.subarray(0, 2).toString("hex") === "ffd8"));
+    assert.match(await runInspectTool([jpg], {}, tools), /^Inspection report[\s\S]*"validation_state":"Valid"/);
 });
 
 test("media forensics: proofmode check report is trimmed to what matters", async () => {
@@ -163,7 +177,14 @@ test("media forensics: proofmode check report is trimmed to what matters", async
         ],
         errors: [],
         integrity: { pgp: { media: 1, proof: 1 }, c2pa: 1, opentimestamps: 1 },
-        consistency: { verified: false, summary: { totalFlags: 1 } },
+        consistency: {
+            verified: false,
+            summary: { totalFiles: 2, totalFlags: 3 },
+            fileDiscrepancies: [
+                { fileName: "a.jpg", flags: [{ severity: "warning", kind: "missingData", message: "network.ipv4 is missing" }] },
+                { fileName: "b.jpg", flags: [{ severity: "warning", kind: "missingData", message: "network.ipv4 is missing" }, { severity: "error", kind: "mismatch", message: "EXIF Model differs" }] },
+            ],
+        },
         synchrony: { verified: true },
     };
     const s = proofcheckSummary(raw);
@@ -172,4 +193,26 @@ test("media forensics: proofmode check report is trimmed to what matters", async
     assert.deepEqual(s.files[0].pgp_signature.media, { verified: true, key_id: "8b9b", details: "" });
     assert.deepEqual(s.files[0].opentimestamps.attestations, ["Pending: update URI https://a.example"]);
     assert.equal(s.consistency.verified, false);
+    assert.deepEqual(s.consistency.flags, { "warning (missingData): network.ipv4 is missing": "all 2 files", "error (mismatch): EXIF Model differs": "b.jpg" });
+});
+
+test("media forensics: proofmode's huge JSON is streamed with byte arrays dropped", async () => {
+    const { JsonByteArrayFilter } = await import("../src/forensics.js");
+    const doc = {
+        keys: [{ key: Array.from({ length: 3000 }, (_, i) => i % 256) }],
+        files: [{ name: "a [1, 2] \"q\".jpg", data: Array(5000).fill(7), coords: [-71.125, 42.3286], empty: [], nested: [[1, 2], ["x"]] }],
+        ok: true,
+    };
+    const text = "Status: Starting ProofCheck\nStatus: Checking integrity\n" + JSON.stringify(doc, null, 2) + "\nOutput written\n";
+    const f = new JsonByteArrayFilter();
+    const bytes = Buffer.from(text);
+    for (let i = 0; i < bytes.length; i += 7) f.write(bytes.subarray(i, i + 7)); // odd chunk size: arrays split across chunks
+    const out = JSON.parse(f.result());
+    assert.equal(out.keys[0].key, "[3000 numbers omitted]");
+    assert.equal(out.files[0].data, "[5000 numbers omitted]");
+    assert.deepEqual(out.files[0].coords, [-71.125, 42.3286]);
+    assert.deepEqual(out.files[0].empty, []);
+    assert.deepEqual(out.files[0].nested, [[1, 2], ["x"]]);
+    assert.equal(out.files[0].name, 'a [1, 2] "q".jpg');
+    assert.equal(out.ok, true);
 });

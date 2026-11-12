@@ -32,6 +32,12 @@ Follow-ups for the Tibetan voice features. Background and test results are in [d
 
 - [ ] Test in Matrix: a C2PA photo (e.g. from a Pixel), the same photo sent as a compressed image, an edited copy, a ProofMode proof bundle, and a video.
 - [ ] Ask the ProofMode team to review `prompts/osint.md` and the `inspect_media` report (src/forensics.js).
+- [ ] Notes for the ProofMode team, from testing real bundles with proofmode-rust v0.9.0:
+  - The v0.9.0 tag's `Cargo.lock` lists the crate as 0.8.4, so `cargo build --locked` fails (the Dockerfile patches that line).
+  - `proofmode check -o` writes every file's bytes and the PGP keys as pretty-printed number arrays: 777 MB of JSON for a 61 MB bundle. The bot streams it through a filter (`JsonByteArrayFilter`); an option to leave the bytes out would help everyone.
+  - OpenTimestamps shows `verified: true` when the proof only parsed and is still pending at a calendar.
+  - Location "outlier" flags fire on differences of centimetres (z-scores on a std of 0.000002°), and the EXIF vs ProofMode model check flags "SM-S918U1" vs "Samsung SM-S918U1" as an error.
+  - `createdAt` in `.proof.json` is local time with a `Z` (UTC) suffix.
 - [ ] OpenTimestamps: the report shows each proof's attestations as stored in the bundle (often "Pending" at a calendar). Upgrading a pending proof to its Bitcoin anchor needs network access to the calendars, which the egress allowlist blocks. Consider allowing them.
 - [ ] The C2PA trust lists in `c2pa-trust/` are a snapshot; refresh them (`npm run c2pa-trust`) every release or two. The interim (legacy) list is being retired.
 - [ ] Only files in the current message (or the one replied to) can be inspected. Consider keeping the last few attachments per room for follow-up questions.

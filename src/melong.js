@@ -21,7 +21,7 @@ import { splitByScript } from "./speech.js";
 import { LogService } from "matrix-bot-sdk";
 import { WIKI_TOOLS, runWikiTool, wikiInstructions } from "./wiki.js";
 import { PDF_INSTRUCTIONS, PDF_TOOL, pdfFilename, renderPdf } from "./pdf.js";
-import { INSPECT_INSTRUCTIONS, INSPECT_TOOL, isZip, runInspectTool } from "./forensics.js";
+import { INSPECT_INSTRUCTIONS, INSPECT_TOOL, bundleImages, isZip, runInspectTool } from "./forensics.js";
 
 // Builds the Tinfoil SDK client. By default the SDK asks Tinfoil's attestation
 // service for a router and gets a random one (e.g. router-0.tinfoil.sh or
@@ -273,7 +273,14 @@ export class ChatClient {
                 notes.push(t);
             } else if (isZip(a)) {
                 // The model can't read archives; inspect_media can (e.g. ProofMode proof bundles).
-                parts.push({ type: "text", text: `[Attached archive: ${a.filename}, ${a.data.length} bytes. The inspect_media tool can check it.]` });
+                // A few photos from inside are shown, downscaled, so it can see what they depict.
+                const previews = await bundleImages(a).catch((err) => (LogService.warn("melong", `Bundle previews failed: ${err.message}`), []));
+                const shown = previews.length ? ` Downscaled copies of ${previews.length} of its photos/video frames follow: ${previews.map((p) => p.filename).join(", ")}.` : "";
+                parts.push({ type: "text", text: `[Attached archive: ${a.filename}, ${a.data.length} bytes. The inspect_media tool can check it.${shown}]` });
+                for (const p of previews) {
+                    parts.push({ type: "text", text: `[From ${a.filename}: ${p.filename}]` });
+                    parts.push({ type: "image_url", image_url: { url: dataUrl(p) } });
+                }
                 notes.push(`[Shared a file: ${a.filename}]`);
             } else {
                 parts.push({ type: "file", file: { filename: a.filename, file_data: dataUrl(a) } });

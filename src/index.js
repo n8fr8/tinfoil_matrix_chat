@@ -449,11 +449,15 @@ function mediaItems(content) {
     return [];
 }
 
+// Zip archives get a larger size limit: they are inspected, not sent to the model.
+const isArchive = (c) => /zip/.test(c.info?.mimetype || "") || /\.zip$/i.test(attachmentFilename(c));
+
 async function handleAttachments(client, chat, config, roomId, event, items) {
-    const tooBig = items.find((c) => c.info?.size > config.maxAttachmentBytes);
+    const limit = (c) => (isArchive(c) ? config.maxArchiveBytes || config.maxAttachmentBytes : config.maxAttachmentBytes);
+    const tooBig = items.find((c) => c.info?.size > limit(c));
     if (tooBig) {
         if (!config.commandPrefix) {
-            const mb = Math.round(config.maxAttachmentBytes / 1024 / 1024);
+            const mb = Math.round(limit(tooBig) / 1024 / 1024);
             await replyNotice(client, roomId, event, `Sorry, "${attachmentFilename(tooBig)}" is too large (limit ${mb} MB).`);
         }
         return;

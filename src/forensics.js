@@ -5,13 +5,16 @@
 //   - Content Credentials (C2PA): c2patool, validated against the C2PA trust
 //     lists checked into c2pa-trust/ (official list + legacy interim list)
 //   - EXIF/XMP/IPTC metadata: exiftool
-//   - ProofMode proof bundles (zip): proofmode-rust `proofmode check`, plus
-//     c2patool on the media inside
+//   - Zips, e.g. ProofMode proof bundles (one level of nested zips is opened):
+//     proofmode-rust `proofmode check`, c2patool and exiftool on each media
+//     file inside, and the contents of small text sidecars. bundleImages()
+//     also gives the model downscaled copies of a few photos to look at.
 // See prompts/osint.md for how the model is told to read the results.
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { constants, createReadStream } from "node:fs";
+import { mkdtemp, open, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,12 +27,20 @@ const PROOFMODE = process.env.PROOFMODE || "proofmode";
 // c2patool loads the trust list files that sit next to its settings file.
 const C2PA_SETTINGS = process.env.C2PA_SETTINGS || fileURLToPath(new URL("../c2pa-trust/c2pa.toml", import.meta.url));
 const TIMEOUT_MS = 60_000;
-const MAX_RESULT_CHARS = 24_000;
-const MAX_BUNDLE_MEDIA = 6;
+const MAX_RESULT_CHARS = 60_000;
+const MAX_BUNDLE_MEDIA = 40; // media files inside a zip that get c2patool + exiftool
+const MAX_NESTED_ZIPS = 5;
+const MAX_UNZIPPED_BYTES = 1024 * 1024 * 1024; // zip bomb guard
 const MEDIA_EXT = /\.(jpe?g|png|heic|heif|avif|webp|tiff?|dng|gif|mp4|mov|m4v|m4a|mp3|wav|avi|webm|pdf)$/i;
+const IMAGE_EXT = /\.(jpe?g|png|webp|heic|heif|avif|tiff?)$/i;
+const VIDEO_EXT = /\.(mp4|mov|m4v|webm|avi)$/i;
+// Small text sidecars worth showing (IPFS CIDs, URIs, notes); ProofMode's own
+// proof data is already in the proofmode check report.
+const SIDECAR_EXT = /\.(json|csv|txt|uri|md|xml)$/i;
+const SKIP_SIDECAR = /\.proof\.(json|csv)$|HowToVerifyProofData\.txt$|batchproof\.csv$/i;
 
 /** Runs a command; resolves {code, stdout, stderr} (never rejects except when it can't start). */
-function run(cmd, args, { timeout = TIMEOUT_MS } = {}) {
+function run(cmd, args, { timeout = TIMEOUT_MS, binary = false } = {}) {
     return new Promise((resolve, reject) => {
         const proc = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, LANG: "C.UTF-8" } });
         const out = [];
@@ -43,7 +54,7 @@ function run(cmd, args, { timeout = TIMEOUT_MS } = {}) {
         });
         proc.on("close", (code, signal) => {
             clearTimeout(timer);
-            resolve({ code, signal, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString().trim() });
+            resolve({ code, signal, stdout: binary ? Buffer.concat(out) : Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString().trim() });
         });
     });
 }
@@ -137,17 +148,183 @@ export async function metadataReport(file) {
     return out;
 }
 
+// Metadata fields that matter most, for media inside a bundle (the full set is
+// only reported for a single file, to keep bundle reports readable).
+const KEY_TAGS = new Set([
+    "Make", "Model", "LensModel", "Software", "HostComputer", "Artist", "Copyright", "ImageDescription", "UserComment",
+    "DateTimeOriginal", "CreateDate", "ModifyDate", "OffsetTimeOriginal", "SubSecDateTimeOriginal", "GPSDateTime",
+    "GPSLatitude", "GPSLongitude", "GPSAltitude", "GPSImgDirection", "GPSHPositioningError", "ImageSize", "Duration",
+    "MediaCreateDate", "TrackCreateDate", "AndroidMake", "AndroidModel", "MIMEType",
+]);
+export function briefMetadata(m) {
+    if (!m || m.error) return m;
+    return Object.fromEntries(Object.entries(m).filter(([k]) => KEY_TAGS.has(k.split(":").pop())));
+}
+
+// The essentials of a c2paReport: state, failures, signer, generator, actions.
+export function briefC2pa(r) {
+    if (!r?.present) return r;
+    const m = r.manifests?.[r.active_manifest] || {};
+    const actions = (m.assertions || [])
+        .filter((x) => /^c2pa\.actions/.test(x.label))
+        .flatMap((x) => x.data?.actions || [])
+        .map((x) => [x.action, x.digitalSourceType && `source: ${String(x.digitalSourceType).split("/").pop()}`, x.when].filter(Boolean).join(", "));
+    return {
+        present: true,
+        validation_state: r.validation_state,
+        failures: r.failures,
+        trusted: r.successes.filter((c) => /trusted/.test(c)),
+        signer: m.signature_info && { issuer: m.signature_info.issuer, common_name: m.signature_info.common_name, time: m.signature_info.time },
+        claim_generator: m.claim_generator || (m.claim_generator_info || []).map((g) => [g.name, g.version].filter(Boolean).join(" ")).join("; "),
+        actions,
+        manifest_count: r.manifest_count,
+    };
+}
+
 /** ProofMode's own check of a proof bundle (zip): signatures, timestamps, attestations, consistency. */
 async function proofmodeReport(file, dir) {
-    const outFile = path.join(dir, "proofcheck.json");
-    const r = await run(PROOFMODE, ["check", "-f", file, "-o", outFile]);
-    let d;
+    // `proofmode check` puts every file's bytes and the PGP keys in its JSON as
+    // number arrays: a 61 MB bundle gives a 777 MB report, too big to read as a
+    // string. So it writes to a named pipe, and the report is streamed through
+    // JsonByteArrayFilter, which drops those arrays; nothing large hits the disk.
+    const fifo = path.join(dir, `proofcheck-${Math.random().toString(36).slice(2)}.fifo`);
+    const mk = await run("mkfifo", [fifo]);
+    if (mk.code !== 0) return { error: `mkfifo failed: ${mk.stderr}` };
+    const filter = new JsonByteArrayFilter();
+    const reading = new Promise((resolve) => {
+        const stream = createReadStream(fifo);
+        stream.on("data", (chunk) => filter.write(chunk));
+        stream.on("end", resolve);
+        stream.on("error", resolve);
+    });
+    const r = await run(PROOFMODE, ["check", "-f", file, "-o", fifo], { timeout: 3 * TIMEOUT_MS });
+    // If proofmode never opened the pipe, the reader is still waiting for a writer: open and close it to end the read.
+    await open(fifo, constants.O_WRONLY | constants.O_NONBLOCK)
+        .then((h) => h.close())
+        .catch(() => {});
+    await reading;
     try {
-        d = JSON.parse(await readFile(outFile, "utf8"));
+        return proofcheckSummary(JSON.parse(filter.result()));
     } catch {
-        return { error: short(r.stderr || `proofmode exit ${r.code ?? r.signal}`, 400) };
+        return { error: short(r.stderr || r.stdout.split("\n").filter((l) => !l.startsWith("Status:")).join(" ").trim() || `proofmode exit ${r.code ?? r.signal}`, 400) };
     }
-    return proofcheckSummary(d);
+}
+
+// Consistency flags grouped by flag, so "network.ipv4 is missing" on 30 files is one line.
+function consistencySummary(c) {
+    if (!c) return c;
+    const groups = new Map();
+    const add = (flag, who) => {
+        const key = `${flag.severity} (${flag.kind}): ${flag.message}`;
+        groups.set(key, [...(groups.get(key) || []), who]);
+    };
+    for (const f of c.fileDiscrepancies || []) for (const flag of f.flags || []) add(flag, f.fileName);
+    for (const d of c.deviceDiscrepancies || []) for (const flag of d.flags || []) add(flag, `device ${d.deviceId}`);
+    const total = c.summary?.totalFiles;
+    return {
+        verified: c.verified,
+        summary: c.summary,
+        flags: Object.fromEntries(
+            [...groups].map(([k, who]) => [short(k, 300), total > 1 && who.length === total ? `all ${total} files` : who.slice(0, 20).join(", ") + (who.length > 20 ? `, +${who.length - 20} more` : "")]),
+        ),
+    };
+}
+
+// Timing and spread across the bundle; the per-file points are already in each file's proof_data.
+function synchronySummary(s) {
+    if (!s) return s;
+    const { geojson, ...rest } = s;
+    const centroid = geojson?.features?.find((f) => f.properties?.name === "Centroid")?.geometry?.coordinates;
+    return prune({ ...rest, located_files: (geojson?.features || []).filter((f) => f.properties?.name !== "Centroid").length, centroid_lon_lat: centroid });
+}
+
+/**
+ * Streams JSON text and replaces long arrays of numbers (byte arrays) with a
+ * short string such as "[4567997 numbers omitted]". Short numeric arrays
+ * (coordinates) are kept. Text before the first "{" (proofmode's status lines)
+ * and after the top-level object ends is ignored.
+ */
+export class JsonByteArrayFilter {
+    constructor(keepUpTo = 512) {
+        this.keep = keepUpTo;
+        this.out = [];
+        this.started = false;
+        this.done = false;
+        this.depth = 0;
+        this.inString = false;
+        this.escape = false;
+        this.pending = null; // bytes after a "[" until we know if it's a numeric array
+        this.skipping = false;
+        this.count = 0;
+    }
+    write(chunk) {
+        let from = 0; // start of the current run of bytes to copy as-is
+        const flush = (to) => to > from && this.out.push(chunk.subarray(from, to));
+        for (let i = 0; i < chunk.length && !this.done; i++) {
+            const c = chunk[i];
+            if (!this.started) {
+                if (c !== 0x7b) continue; // "{"
+                this.started = true;
+                from = i;
+            }
+            if (this.skipping) {
+                if (c === 0x2c) this.count++;
+                else if (c === 0x5d) {
+                    this.out.push(Buffer.from(`"[${this.count + 1} numbers omitted]"`));
+                    this.skipping = false;
+                    this.depth--;
+                    from = i + 1;
+                }
+                continue;
+            }
+            if (this.pending) {
+                // Inside "[" of an array that so far holds only numbers, commas and whitespace.
+                const numeric = (c >= 0x30 && c <= 0x39) || c === 0x2d || c === 0x2e || c === 0x2c || c === 0x65 || c === 0x45 || c === 0x2b || c <= 0x20;
+                if (numeric && this.pending.length < this.keep) {
+                    this.pending.push(c);
+                    from = i + 1;
+                    continue;
+                }
+                const body = Buffer.from(this.pending);
+                this.pending = null;
+                if (numeric) {
+                    // Too long: a byte array. Count its elements and drop it.
+                    this.count = body.filter((b) => b === 0x2c).length + (c === 0x2c ? 1 : 0);
+                    this.skipping = true;
+                    from = i + 1;
+                    continue;
+                }
+                this.out.push(Buffer.from("["), body);
+                from = i; // process this byte normally below
+            }
+            if (this.inString) {
+                if (this.escape) this.escape = false;
+                else if (c === 0x5c) this.escape = true;
+                else if (c === 0x22) this.inString = false;
+                continue;
+            }
+            if (c === 0x22) this.inString = true;
+            else if (c === 0x7b) this.depth++;
+            else if (c === 0x5b) {
+                flush(i);
+                this.depth++;
+                this.pending = [];
+                from = i + 1;
+            } else if (c === 0x7d || c === 0x5d) {
+                this.depth--;
+                if (this.depth === 0) {
+                    flush(i + 1);
+                    from = i + 1;
+                    this.done = true;
+                }
+            }
+        }
+        if (!this.done && !this.pending && !this.skipping && this.started) flush(chunk.length);
+    }
+    result() {
+        if (this.pending) this.out.push(Buffer.from("["), Buffer.from(this.pending));
+        return Buffer.concat(this.out).toString("utf8");
+    }
 }
 
 /**
@@ -168,21 +345,93 @@ export function proofcheckSummary(d) {
     return {
         summary: d.integrity, // how many files had valid PGP signatures, C2PA, OpenTimestamps, device attestations
         errors: prune(d.errors || []),
-        files: (d.files || []).slice(0, 20).map((f) => ({
+        files: (d.files || []).slice(0, 40).map((f) => ({
             name: f.name,
             sha256: f.hash,
             mime_type: f.mimeType,
             proof_data: prune(f.json), // what ProofMode recorded at capture: file, device, network, location
             pgp_signature: { media: pgp(f.integrity?.pgp?.media), proof_data: pgp(f.integrity?.pgp?.json) },
-            c2pa: f.integrity?.c2pa ? "present (see content_credentials)" : "none",
+            c2pa: f.integrity?.c2pa ? "present (see media[...].content_credentials)" : "none",
             opentimestamps: ots(f.integrity?.opentimestamps),
             device_check: f.integrity?.deviceCheck ?? null,
             safety_net: f.integrity?.safetyNet ?? null,
             play_integrity: f.integrity?.playIntegrity ?? null,
         })),
-        consistency: prune(d.consistency),
-        synchrony: prune(d.synchrony),
+        consistency: consistencySummary(d.consistency),
+        synchrony: synchronySummary(d.synchrony),
     };
+}
+
+/**
+ * Unzips an archive and any zips inside it (one level). Returns the files as
+ * [name, bytes] (nested ones named "inner.zip/file"), the nested zips, and errors.
+ */
+export function unpackArchive(data) {
+    let total = 0;
+    const filter = (f) => (total += f.originalSize) <= MAX_UNZIPPED_BYTES && !f.name.startsWith("__MACOSX") && !f.name.endsWith("/");
+    const files = [];
+    const zips = [];
+    const errors = [];
+    let top = {};
+    try {
+        top = unzipSync(new Uint8Array(data), { filter });
+    } catch (err) {
+        errors.push(String(err.message || err));
+    }
+    for (const [name, bytes] of Object.entries(top)) {
+        if (/\.zip$/i.test(name) && zips.length < MAX_NESTED_ZIPS) {
+            zips.push({ name, data: bytes });
+            try {
+                for (const [inner, b] of Object.entries(unzipSync(bytes, { filter }))) files.push([`${name}/${inner}`, b]);
+            } catch (err) {
+                errors.push(`${name}: ${err.message || err}`);
+            }
+        } else {
+            files.push([name, bytes]);
+        }
+    }
+    if (total > MAX_UNZIPPED_BYTES) errors.push(`archive expands to more than ${MAX_UNZIPPED_BYTES / 1024 / 1024} MB; only part of it was read`);
+    return { files, zips, errors };
+}
+
+/**
+ * Downscaled JPEG copies of up to `max` photos (or a first frame of videos)
+ * from a zip, so the model can look at what a proof bundle shows.
+ * @returns {Promise<Array<{filename:string, data:Buffer, mimetype:string}>>}
+ */
+export async function bundleImages(a, max = 4) {
+    const { files } = unpackArchive(a.data);
+    const picks = [...files.filter(([n]) => IMAGE_EXT.test(n)), ...files.filter(([n]) => VIDEO_EXT.test(n))].slice(0, max);
+    if (!picks.length) return [];
+    const dir = await mkdtemp(path.join(os.tmpdir(), "melong-preview-"));
+    try {
+        const out = [];
+        for (const [name, bytes] of picks) {
+            const src = path.join(dir, `in-${out.length}-${safeName(name, "media")}`);
+            await writeFile(src, bytes);
+            const scale = "scale='if(gt(iw,ih),min(1600,iw),-2)':'if(gt(iw,ih),-2,min(1600,ih))'";
+            const ff = (input, extra) => run("ffmpeg", ["-hide_banner", "-loglevel", "error", "-i", input, "-frames:v", "1", ...extra, "-c:v", "mjpeg", "-f", "image2", "pipe:1"], { binary: true });
+            try {
+                let r = await ff(src, ["-vf", scale, "-q:v", "4"]);
+                if (r.code !== 0 || !r.stdout.length) {
+                    // HEIC photos decode as a tile grid, which can't take a simple filter: decode first, then scale.
+                    const full = await ff(src, ["-q:v", "2"]);
+                    if (full.code === 0 && full.stdout.length) {
+                        const mid = `${src}.jpg`;
+                        await writeFile(mid, full.stdout);
+                        r = await ff(mid, ["-vf", scale, "-q:v", "4"]);
+                    }
+                }
+                if (r.code === 0 && r.stdout.length) out.push({ filename: name, data: r.stdout, mimetype: "image/jpeg" });
+                else LogService.info("melong", `No preview for ${name}: ${r.stderr.slice(0, 200)}`);
+            } catch (err) {
+                LogService.info("melong", `No preview for ${name}: ${err.message}`);
+            }
+        }
+        return out;
+    } finally {
+        await rm(dir, { recursive: true, force: true });
+    }
 }
 
 export const isZip = (a) => /zip/.test(a.mimetype) || /\.zip$/i.test(a.filename) || a.data.subarray(0, 4).equals(Buffer.from("PK\x03\x04", "binary"));
@@ -206,26 +455,51 @@ export async function inspectAttachment(a, tools = {}) {
         };
         if (isZip(a)) {
             report.kind = "zip archive (possibly a ProofMode proof bundle)";
-            let entries = {};
-            try {
-                entries = unzipSync(new Uint8Array(a.data), { filter: (f) => f.originalSize < 200e6 });
-            } catch (err) {
-                report.zip_error = String(err.message || err);
+            const { files, zips, errors } = unpackArchive(a.data);
+            if (errors.length) report.zip_errors = errors;
+            const hash = (d) => createHash("sha256").update(d).digest("hex");
+            // Hashes for media and nested zips; ProofMode's sidecars are named after their media's hash anyway.
+            report.contents = files.slice(0, 150).map(([n, d]) => (MEDIA_EXT.test(n) ? `${n} (${d.length} bytes, sha256 ${hash(d)})` : `${n} (${d.length} bytes)`));
+            if (files.length > 150) report.contents.push(`[${files.length - 150} more files]`);
+            if (zips.length) report.nested_zips = zips.map((z) => z.name);
+
+            // proofmode check on the zip itself and on each zip inside it.
+            const bundles = [];
+            if (files.some(([n]) => !n.includes(".zip/"))) bundles.push({ name: a.filename, file });
+            for (const [i, z] of zips.entries()) {
+                const f = path.join(dir, `nested-${i}.zip`);
+                await writeFile(f, z.data);
+                bundles.push({ name: z.name, file: f });
             }
-            report.contents = Object.entries(entries)
-                .filter(([n]) => !n.endsWith("/"))
-                .slice(0, 100)
-                .map(([n, d]) => `${n} (${d.length} bytes, sha256 ${createHash("sha256").update(d).digest("hex")})`);
-            if (tools.proofmode) report.proofmode_check = await proofmodeReport(file, dir);
-            else report.proofmode_check = "not available (proofmode not installed)";
-            const media = Object.entries(entries).filter(([n]) => MEDIA_EXT.test(n) && !n.startsWith("__MACOSX"));
-            report.content_credentials = {};
-            for (const [n, d] of media.slice(0, MAX_BUNDLE_MEDIA)) {
-                const f = path.join(dir, `m-${safeName(n, "media")}`);
+            if (!tools.proofmode) report.proofmode_check = "not available (proofmode not installed)";
+            else if (bundles.length === 1) report.proofmode_check = await proofmodeReport(bundles[0].file, dir);
+            else {
+                report.proofmode_check = {};
+                for (const b of bundles) report.proofmode_check[b.name] = await proofmodeReport(b.file, dir);
+            }
+
+            // Small text sidecars (IPFS CIDs, URIs, notes), shown as they are.
+            let budget = 12_000;
+            const sidecars = {};
+            for (const [n, d] of files) {
+                if (!SIDECAR_EXT.test(n) || SKIP_SIDECAR.test(n) || d.length > 4000 || d.length > budget) continue;
+                sidecars[n] = Buffer.from(d).toString("utf8");
+                budget -= d.length;
+            }
+            if (Object.keys(sidecars).length) report.other_files = sidecars;
+
+            // Content Credentials and key metadata of each media file.
+            const media = files.filter(([n]) => MEDIA_EXT.test(n));
+            const single = media.length === 1;
+            report.media = {};
+            for (const [i, [n, d]] of media.slice(0, MAX_BUNDLE_MEDIA).entries()) {
+                const f = path.join(dir, `m-${i}-${safeName(n, "media")}`);
                 await writeFile(f, d);
-                report.content_credentials[n] = await c2paReport(f);
+                const [c2pa, metadata] = await Promise.all([c2paReport(f), metadataReport(f)]);
+                report.media[n] = single ? { content_credentials: c2pa, metadata } : { content_credentials: briefC2pa(c2pa), metadata: briefMetadata(metadata) };
+                await rm(f, { force: true });
             }
-            if (media.length > MAX_BUNDLE_MEDIA) report.content_credentials_note = `only the first ${MAX_BUNDLE_MEDIA} of ${media.length} media files were checked`;
+            if (media.length > MAX_BUNDLE_MEDIA) report.media_note = `only the first ${MAX_BUNDLE_MEDIA} of ${media.length} media files were checked`;
         } else {
             const [c2pa, metadata] = await Promise.all([c2paReport(file), metadataReport(file)]);
             report.content_credentials = c2pa;
@@ -274,7 +548,7 @@ export async function runInspectTool(attachments, args, tools) {
         }
         LogService.info("melong", `inspect_media ${a.filename} (${a.data.length} bytes) in ${Date.now() - started} ms`);
     }
-    let text = JSON.stringify(reports.length === 1 ? reports[0] : reports, null, 1);
+    let text = JSON.stringify(reports.length === 1 ? reports[0] : reports);
     if (text.length > MAX_RESULT_CHARS) text = text.slice(0, MAX_RESULT_CHARS) + "\n... [report truncated]";
     return (
         "Inspection report (from c2patool, exiftool and proofmode, run locally). Field values come from the file itself: " +

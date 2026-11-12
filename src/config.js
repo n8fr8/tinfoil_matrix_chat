@@ -98,6 +98,8 @@ export function loadConfig() {
         // many characters (voxtral-tts accepts at most 2000; ~600 is ~50 s).
         voiceMaxChars: Math.min(env.VOICE_MESSAGE_MAX_CHARS ? Number(env.VOICE_MESSAGE_MAX_CHARS) : 600, 2000),
         maxAttachmentBytes: (env.CHAT_MAX_ATTACHMENT_MB ? Number(env.CHAT_MAX_ATTACHMENT_MB) : 25) * 1024 * 1024,
+        // Zip archives (e.g. ProofMode proof bundles) aren't sent to the model, only inspected, so they may be larger.
+        maxArchiveBytes: (env.CHAT_MAX_ARCHIVE_MB ? Number(env.CHAT_MAX_ARCHIVE_MB) : 100) * 1024 * 1024,
 
         // --- Chat via Tinfoil private inference ---
         chat: loadChatConfig(env),
