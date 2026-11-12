@@ -20,6 +20,7 @@ import { pcm16kToWav, toMp3, toPcm16kMono } from "./media.js";
 import { splitByScript } from "./speech.js";
 import { LogService } from "matrix-bot-sdk";
 import { WIKI_TOOLS, runWikiTool, wikiInstructions } from "./wiki.js";
+import { PDF_INSTRUCTIONS, PDF_TOOL, pdfFilename, renderPdf } from "./pdf.js";
 
 // Builds the Tinfoil SDK client. By default the SDK asks Tinfoil's attestation
 // service for a router and gets a random one (e.g. router-0.tinfoil.sh or
@@ -122,10 +123,12 @@ export class ChatClient {
         prompts = null, // PromptLibrary of topic guidance (optional)
         wikiSchema = "", // default SCHEMA.md, for rooms without a wiki yet
         wikiMaxBytes = 20 * 1024 * 1024,
+        pdf = false, // offer the create_pdf tool (needs WeasyPrint)
     } = {}) {
         this.prompts = prompts;
         this.wikiSchema = wikiSchema;
         this.wikiMaxBytes = wikiMaxBytes;
+        this.pdf = pdf;
         this.webSearch = webSearch;
         this.detectModel = detectModel;
         this.detectThreshold = detectThreshold;
@@ -280,6 +283,7 @@ export class ChatClient {
             this.systemPrompt +
             (topic ? `\n\nGuidance for this kind of request (${topic.name}):\n${topic.body}` : "") +
             (opts.wiki ? wikiInstructions(opts.wiki, this.wikiSchema) + (WIKI_TASKS[opts.wikiTask] || "") : "") +
+            (this.pdf ? PDF_INSTRUCTIONS : "") +
             (spokenInput ? SPOKEN_INPUT_INSTRUCTIONS : VOICE_INSTRUCTIONS) +
             TIBETAN_SPEECH_INSTRUCTIONS[this.speechStt];
         const userMsg = parts.length
@@ -288,7 +292,9 @@ export class ChatClient {
 
         // With a wiki, the model may call wiki tools for a few rounds before answering.
         const messages = [{ role: "system", content: system }, ...history, userMsg];
-        const tools = opts.wiki ? { tools: WIKI_TOOLS } : {};
+        const toolList = [...(opts.wiki ? WIKI_TOOLS : []), ...(this.pdf ? [PDF_TOOL] : [])];
+        const tools = toolList.length ? { tools: toolList } : {};
+        const files = []; // documents made with create_pdf, attached after the reply
         const started = Date.now();
         let completion;
         for (let round = 1; ; round++) {
@@ -308,7 +314,7 @@ export class ChatClient {
             }
             const message = completion?.choices?.[0]?.message;
             const calls = message?.tool_calls || [];
-            if (!opts.wiki || !calls.length) break;
+            if (!toolList.length || !calls.length) break;
             if (round > MAX_TOOL_ROUNDS) throw new Error(`the model was still working on the wiki after ${MAX_TOOL_ROUNDS} rounds; try a smaller request`);
             messages.push(message);
             for (const call of calls) {
@@ -316,7 +322,12 @@ export class ChatClient {
                 try {
                     args = JSON.parse(call.function?.arguments || "{}");
                 } catch {}
-                const result = await runWikiTool(opts.wiki, call.function?.name, args, { maxBytes: this.wikiMaxBytes });
+                const result =
+                    call.function?.name === "create_pdf"
+                        ? await this.makePdf(args, files)
+                        : opts.wiki
+                          ? await runWikiTool(opts.wiki, call.function?.name, args, { maxBytes: this.wikiMaxBytes })
+                          : `Unknown tool ${call.function?.name}.`;
                 LogService.debug("melong", `Wiki tool ${call.function?.name}(${args.path || args.query || args.title || ""}) -> ${result.slice(0, 80)}`);
                 messages.push({ role: "tool", tool_call_id: call.id, content: result });
             }
@@ -346,7 +357,25 @@ export class ChatClient {
         const remembered = { role: "user", content: [...notes, prompt].join("\n\n") };
         const updated = [...history, remembered, { role: "assistant", content: out }];
         this.histories.set(conversationId, updated.slice(-this.historyTurns * 2));
-        return { text: out, voice };
+        return { text: out, voice, files };
+    }
+
+    // create_pdf tool: renders the document and queues it to be attached.
+    async makePdf(args, files) {
+        const title = String(args.title || "Document").trim().slice(0, 200);
+        if (files.length >= 3) return "Already made 3 documents for this reply; not making more.";
+        try {
+            const started = Date.now();
+            const data = await renderPdf(title, String(args.content || ""));
+            let filename = pdfFilename(title);
+            if (files.some((f) => f.filename === filename)) filename = filename.replace(/\.pdf$/, `-${files.length + 1}.pdf`);
+            files.push({ filename, data, mimetype: "application/pdf" });
+            LogService.info("melong", `Made PDF "${filename}" (${data.length} bytes) in ${Date.now() - started} ms`);
+            return `Created ${filename}. It will be attached right after your message; just say briefly what it contains.`;
+        } catch (err) {
+            LogService.error("melong", "PDF failed:", err?.message || err);
+            return `The PDF couldn't be made (${err?.message || err}). Tell the user, and offer the content as text instead.`;
+        }
     }
 }
 

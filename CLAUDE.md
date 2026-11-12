@@ -27,6 +27,7 @@ src/config.js         env -> config (all settings and defaults)
 src/melong.js         ChatClient: system prompt, Tinfoil chat calls, tool loop, history, STT routing, TTS
 src/media.js          attachment download/decrypt, ffmpeg conversion, voice message encoding, uploads
 src/split.js          splits long replies into several text / voice messages
+src/pdf.js            PDF documents: create_pdf tool, Markdown -> sanitized HTML -> WeasyPrint
 src/prompts.js        topic prompts: loads prompts/*.md, classifies each message
 src/wiki.js           room memory: encrypted storage in Matrix, wiki tools for the model
 src/wiki-schema.md    the rules the model follows for each room's wiki (copied in as SCHEMA.md)
@@ -49,7 +50,7 @@ tinfoil-config.yml    the measured container config (public; no secret values)
 2. The replied-to message (or thread root) is fetched with `quotedMessage`: its text becomes context, or its file becomes an attachment.
 3. `respond` downloads attachments, then `chatWithWiki` takes the room's memory lock and calls `ChatClient.chat`.
 4. `chat` (melong.js): audio is transcribed (`transcribeForModel`). The topic classifier picks a prompt. The system prompt is built (base + topic guidance + room memory instructions + voice/Tibetan rules), then the model is called with web search on and the wiki tools. Tool rounds repeat until it answers.
-5. The reply is split (`split.js`) and sent as text messages in the main timeline. For voice input, or when asked, it is also sent as voice messages (`sendVoiceReplies`). The wiki is saved if it changed.
+5. The reply is split (`split.js`) and sent as text messages in the main timeline, followed by any PDFs the model made with `create_pdf`. For voice input, or when asked, it is also sent as voice messages (`sendVoiceReplies`). The wiki is saved if it changed.
 
 ## Behaviors that look odd but are deliberate
 
@@ -105,7 +106,7 @@ curl -s "https://matrix-chat.guardian-project.containers.tinfoil.dev/diag?infere
 
 ## Tinfoil gotchas
 
-- **Image ramdisk:** below 32 GB of enclave memory, all container images share a 4 GB ramdisk (compressed plus unpacked). An oversized image makes an update hang at "pending" with no error. That's why the sidecar uses int8 ONNX (about 700 MB image) and a static ffmpeg.
+- **Image ramdisk:** below 32 GB of enclave memory, all container images share a 4 GB ramdisk (compressed plus unpacked). An oversized image makes an update hang at "pending" with no error. That's why the sidecar uses int8 ONNX (about 700 MB image), ffmpeg is a static binary, and WeasyPrint is installed with pip (Debian's package drags in about 800 MB of compilers and scipy). The bot image is about 725 MB, and the bot and speech images together are about 1.4 GB unpacked; check `docker images` before adding anything big.
 - **Router pinning:** the Tinfoil JS SDK picks a random router. With the egress allowlist in `tinfoil-config.yml`, the client is pinned to `https://inference.tinfoil.sh` (`createTinfoilClient` in melong.js), or requests time out at random.
 - **No production logs.** Debug instances get logs (`ssh -p <port> root@debug.tinfoil.sh`, `tindbg logs`), but org secrets are injected into any instance whose config lists them, so never debug a release whose config has `secrets:`.
 - **Persistent volumes** are beta, need your own key server, and force downtime on every update (no blue-green). That's why room memory is stored in Matrix instead. Tinfoil's S3 "buckets sidecar" is the other option if storage needs to grow.

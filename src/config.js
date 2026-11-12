@@ -88,6 +88,8 @@ export function loadConfig() {
         // Per-room wikis (src/wiki.js). Empty key = wiki commands are off.
         wikiKey: (env.WIKI_ENCRYPTION_KEY || "").trim(),
         wikiMaxBytes: (env.WIKI_MAX_MB ? Number(env.WIKI_MAX_MB) : 20) * 1024 * 1024,
+        // PDF documents on request (create_pdf tool); needs WeasyPrint (in the image).
+        pdfDocuments: bool(env.PDF_DOCUMENTS, true),
         // Longer replies are split into several messages.
         messageMaxChars: env.CHAT_MESSAGE_MAX_CHARS ? Number(env.CHAT_MESSAGE_MAX_CHARS) : 1500,
         // Voice replies are split into several voice messages of at most this

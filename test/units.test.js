@@ -101,3 +101,17 @@ test("topic prompts: every file in prompts/ parses", async () => {
     for (const p of prompts) assert.ok(p.name && p.description && p.body.length > 200, p.name);
     assert.equal(parsePromptFile("no front matter", "x.md"), null);
 });
+
+test("PDF documents: title handling, sanitizing, file names", async () => {
+    const { documentHtml, pdfFilename, pdfAvailable, renderPdf } = await import("../src/pdf.js");
+    const body = (h) => h.slice(h.indexOf("<body>"));
+    assert.match(body(documentHtml("Phone Security", "# Phone Security\n\ntext\n\n# Part two")), /^<body><h1>Phone Security<\/h1>.*<p>text<\/p>\s*<h2>Part two<\/h2>/s);
+    assert.match(body(documentHtml("ལོ་གསར།", "# ངོ་སྤྲོད།\n\nཚིག")), /<h1>ལོ་གསར།<\/h1>.*<h2>ངོ་སྤྲོད།<\/h2>/s);
+    assert.match(documentHtml("ལོ་གསར།", "བོད་ཀྱི་ལོ་རྒྱུས།"), /<html lang="bo">/);
+    const unsafe = body(documentHtml("x", '<img src="file:///etc/passwd"><script>1</script>[a](javascript:alert(1))<style>p{}</style><link href="http://x">'));
+    assert.doesNotMatch(unsafe, /img|script|javascript|<style|<link/);
+    assert.equal(pdfFilename("ལོ་གསར་གྱི་སྲོལ་རྒྱུན།"), "ལོ་གསར་གྱི་སྲོལ་རྒྱུན.pdf");
+    assert.equal(pdfFilename("Phone Security: Basics!"), "Phone-Security-Basics.pdf");
+    // Rendering itself needs WeasyPrint (installed in the Docker image).
+    if (await pdfAvailable()) assert.equal((await renderPdf("t", "བོད་ཡིག")).subarray(0, 4).toString(), "%PDF");
+});

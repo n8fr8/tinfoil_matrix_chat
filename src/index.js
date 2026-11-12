@@ -17,6 +17,7 @@ import { loadConfig } from "./config.js";
 import { parseCrossSigningKey, signOwnDevice } from "./cross-signing.js";
 import { loadPrompts, PromptLibrary } from "./prompts.js";
 import { defaultSchema, WikiStore } from "./wiki.js";
+import { pdfAvailable } from "./pdf.js";
 import { resolveCredentials } from "./auth.js";
 import { ChatClient, createTinfoilClient, forSpeech } from "./melong.js";
 import { splitMessage, weightedLength } from "./split.js";
@@ -64,6 +65,7 @@ async function main() {
                 ...(status.crossSigning ? { crossSigning: status.crossSigning } : {}),
                 ...(status.prompts ? { prompts: status.prompts } : {}),
                 ...(status.wiki !== undefined ? { wiki: status.wiki } : {}),
+                ...(status.pdf !== undefined ? { pdf: status.pdf } : {}),
                 ...(status.speechStatus ? { speechSidecar: status.speechStatus } : {}),
                 ...(status.error ? { error: status.error } : {}),
             };
@@ -167,6 +169,7 @@ async function startBot(status, startedAt) {
         client: tinfoil,
         wikiSchema: await defaultSchema(),
         wikiMaxBytes: config.wikiMaxBytes,
+        pdf: (status.pdf = config.pdfDocuments && (await pdfAvailable())),
     });
 
     // Cache our own user id so we can ignore our own messages without an await per event.
@@ -554,6 +557,22 @@ async function respond(client, chat, config, roomId, event, text, attachmentCont
         const parts = splitMessage(reply.text, config.messageMaxChars);
         for (const [i, part] of parts.entries()) {
             await client.sendMessage(roomId, replyContent(event, part, { first: i === 0 }));
+        }
+        // Documents the model made (create_pdf), as files (encrypted in encrypted rooms).
+        for (const f of reply.files || []) {
+            try {
+                const media = await uploadForRoom(client, roomId, f.data, f.mimetype, f.filename);
+                await client.sendMessage(roomId, {
+                    msgtype: "m.file",
+                    body: f.filename,
+                    filename: f.filename,
+                    ...media,
+                    info: { mimetype: f.mimetype, size: f.data.length },
+                });
+            } catch (err) {
+                LogService.error("melong", `Sending ${f.filename} failed:`, err?.message || err);
+                await replyNotice(client, roomId, event, `(Couldn't attach ${f.filename}: ${err?.message || err})`);
+            }
         }
         if (reply.voice) {
             try {

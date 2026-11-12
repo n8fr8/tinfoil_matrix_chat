@@ -17,6 +17,7 @@ Send the bot a message and it replies. It remembers recent messages in each room
 - Searches the web when a question needs current information, and cites its sources (Tinfoil web search; `WEB_SEARCH=false` turns it off). See [Web search](#web-search).
 - Adds topic-specific guidance for requests like digital security training, legal questions, history lessons, Tibetan monastic-style debate or nonviolent action training, from Markdown files in `prompts/`. See [Topic prompts](#topic-prompts).
 - Remembers things for each room: say "remember this" and ask about it later; `!memory export` downloads everything as a zip. Behind the scenes it's a wiki of linked Markdown pages. See [Room memory](#room-memory).
+- Makes PDF documents on request ("make this a printable document", "send me a PDF handout"), in any language including Tibetan. See [PDF documents](#pdf-documents).
 - Remembers the last few exchanges per room (in memory; cleared on restart or with `!reset`).
 
 ## Requirements
@@ -80,6 +81,7 @@ All settings come from environment variables (loaded from `.env`). See [`.env.ex
 | `PROMPT_CLASSIFIER_MODEL` | `TINFOIL_MODEL` | Model that picks the topic for each message. |
 | `WIKI_ENCRYPTION_KEY` | — | Turns on room memory; encrypts it at rest (base64, 32+ bytes). See [Room memory](#room-memory). |
 | `WIKI_MAX_MB` | `20` | Size limit for each room's memory. |
+| `PDF_DOCUMENTS` | `true` | Let the model make PDF documents on request (needs WeasyPrint, which the Docker image includes). |
 | `WEB_SEARCH` | `true` | Let the model search the web when it needs to. See [Web search](#web-search). |
 | `TINFOIL_TRANSCRIPTION_MODEL` | `voxtral-small-24b` | Speech-to-text model for audio and video. |
 | `CHAT_MAX_ATTACHMENT_MB` | `25` | Larger attachments are refused. |
@@ -87,6 +89,16 @@ All settings come from environment variables (loaded from `.env`). See [`.env.ex
 | `TINFOIL_TTS_VOICE` | `neutral_female` | Voice name; must be one the TTS model offers (see `.env.example`). |
 | `CHAT_MESSAGE_MAX_CHARS` | `1500` | Longer text replies are sent as several messages. |
 | `VOICE_MESSAGE_MAX_CHARS` | `600` | Longer voice replies are sent as several voice messages (max 2000, the `voxtral-tts` limit). |
+
+### PDF documents
+
+Ask for a document, a printable version, a handout, a report or a PDF ("make that a PDF", "turn this into a one-page handout") and the bot writes it and attaches it as a PDF file after a short reply. It can also turn an earlier answer into a PDF. Documents are written in the language you're using.
+
+- The model calls a `create_pdf` tool with a title and the document in Markdown (headings, lists, tables). [src/pdf.js](src/pdf.js) turns that into HTML and renders it to A4 with page numbers, using [WeasyPrint](https://weasyprint.org).
+- WeasyPrint shapes complex scripts properly (Tibetan stacks, Devanagari conjuncts, Chinese/Japanese/Korean) with the Noto fonts in the image. Mostly-Tibetan documents get a larger font size and line height.
+- Only plain document structure is kept (no images, styles or scripts), so rendering never fetches files or URLs.
+- In encrypted rooms the PDF is encrypted like any other file. At most 3 documents per reply.
+- WeasyPrint is installed in the Docker image with pip (versions pinned in `requirements-pdf.txt`); it adds about 290 MB, mostly fonts. Running the bot outside Docker without WeasyPrint just turns PDFs off.
 
 ### Room memory
 
@@ -197,6 +209,7 @@ src/
   speech.js  client for the Tibetan speech sidecar
   prompts.js topic prompts: loading and per-message classification
   split.js   splits long replies into several messages
+  pdf.js     PDF documents: Markdown -> HTML -> PDF with WeasyPrint
   wiki.js    room wikis: encrypted storage in Matrix, the model's wiki tools
   wiki-schema.md  the rules the model follows for each wiki
   cross-signing.js  signs the bot's new devices (setup: npm run cross-signing)
