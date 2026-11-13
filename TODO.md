@@ -28,6 +28,11 @@ Follow-ups for the Tibetan voice features. Background and test results are in [d
 - [ ] During a blue-green update the old and new instance both run for a few minutes; a wiki change in that window could be overwritten by the other instance.
 - [ ] Anyone in a room can change or clear its wiki. Consider limiting `!memory clear` to room moderators.
 
+## Encryption across restarts
+
+- [ ] Keep the same Matrix device across restarts: log in again with the same device ID and restore the crypto store, saved encrypted in Matrix like room memory. That fixes apps that never share an existing room key with a new device, and makes messages from before a restart readable. Hard part: during a blue-green update two instances share the device (to-device messages and Olm sessions can diverge).
+- [ ] Find out which app the owner uses, and whether it ever shares an existing room key with a new device.
+
 ## Media forensics
 
 - [ ] Test in Matrix: a C2PA photo (e.g. from a Pixel), the same photo sent as a compressed image, an edited copy, a ProofMode proof bundle, and a video.

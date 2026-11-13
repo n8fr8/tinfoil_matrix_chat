@@ -5,6 +5,7 @@ import {
     MatrixClient,
     SimpleFsStorageProvider,
     RustSdkCryptoStorageProvider,
+    EncryptedRoomEvent,
     LogService,
     RichConsoleLogger,
     LogLevel,
@@ -195,6 +196,10 @@ async function startBot(status, startedAt) {
     if (cryptoStore) {
         client.on("room.failed_decryption", (roomId, event, err) => {
             LogService.warn("melong", `Failed to decrypt an event in ${roomId}:`, err?.message || err);
+            if (event?.sender === botUserId || (event?.origin_server_ts && event.origin_server_ts < startedAt)) return;
+            handleUndecryptable(client, config, roomId, event, (decrypted) =>
+                handleMessage(client, chat, config, botUserId, roomId, decrypted),
+            ).catch((e) => LogService.error("melong", `Failed to handle an undecryptable message in ${roomId}:`, e?.message || e));
         });
     }
 
@@ -350,6 +355,35 @@ function replyContent(event, text, { msgtype = "m.text", first = true } = {}) {
 
 function replyNotice(client, roomId, event, text) {
     return client.sendMessage(roomId, replyContent(event, text, { msgtype: "m.notice" }));
+}
+
+// A message the bot can't decrypt, nearly always because the sender's app
+// hasn't shared the room key with this device (each restart is a new device;
+// some apps keep using the old key and never send it on). The key sometimes
+// arrives a moment after the message, so retry first; if it never comes, say
+// so once per room key instead of staying silent.
+const UNDECRYPTABLE_RETRY_MS = [2000, 8000, 20000];
+const undecryptableNoticed = new Set();
+export const UNDECRYPTABLE_NOTICE =
+    "I couldn't read your message. I was restarted, so I'm a new device in this room, and your app hasn't shared " +
+    "this room's encryption key with me yet. To fix it, make your app start a new key: in Element (web or desktop), " +
+    "type /discardsession in this room, then send your message again. Or start a new room with me.";
+
+async function handleUndecryptable(client, config, roomId, event, onDecrypted, retryMs = UNDECRYPTABLE_RETRY_MS) {
+    for (const ms of retryMs) {
+        await new Promise((r) => setTimeout(r, ms));
+        try {
+            const decrypted = (await client.crypto.decryptRoomEvent(new EncryptedRoomEvent(event), roomId)).raw;
+            LogService.info("melong", `Decrypted ${event.event_id} after a retry (the room key arrived late)`);
+            if (decrypted.type === "m.room.message") await onDecrypted(decrypted);
+            return;
+        } catch {}
+    }
+    if (config.commandPrefix) return; // in shared rooms, unreadable messages may not be for the bot
+    const key = `${roomId}|${event.content?.session_id || event.content?.sender_key || ""}`;
+    if (undecryptableNoticed.has(key)) return;
+    undecryptableNoticed.add(key);
+    await replyNotice(client, roomId, event, UNDECRYPTABLE_NOTICE);
 }
 
 // Fetches a replied-to message: its text as context, or its file as an attachment.
@@ -677,7 +711,7 @@ async function applyDisplayName(client, userId, displayName) {
 }
 
 // Exported for tests; the bot only starts when this file is run directly.
-export { handleMessage };
+export { handleMessage, handleUndecryptable };
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
     main().catch((err) => {

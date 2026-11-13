@@ -3,7 +3,7 @@
 // clients behave; see "Client quirks" in CLAUDE.md.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { handleMessage } from "../src/index.js";
+import { UNDECRYPTABLE_NOTICE, handleMessage, handleUndecryptable } from "../src/index.js";
 
 const WAIT = Number(process.env.FILE_NOTE_WAIT_MS) || 6000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -127,4 +127,35 @@ test("a reply to a text message brings in the quoted text", async () => {
     await send(text("$r", "> <@me:x> Our picnic is on February 18\n\nremember this", { "m.relates_to": { "m.in_reply_to": { event_id: "$q" } } }));
     await sleep(50);
     assert.match(calls[0].text, /Replying to this message from @me:x[\s\S]*Our picnic is on February 18[\s\S]*remember this$/);
+});
+
+test("undecryptable message: retried, then one notice per room key", async () => {
+    const sent = [];
+    let keyArrived = false;
+    const client = {
+        crypto: {
+            async decryptRoomEvent(ev) {
+                if (!keyArrived) throw new Error("Can't find the room key");
+                return { raw: { ...ev.raw, type: "m.room.message", content: { msgtype: "m.text", body: "hi" } } };
+            },
+        },
+        async sendMessage(_room, content) {
+            sent.push(content);
+        },
+    };
+    const enc = (id, session) => ({ event_id: id, sender: "@me:x", type: "m.room.encrypted", content: { algorithm: "m.megolm.v1.aes-sha2", session_id: session, ciphertext: "x" } });
+    const handled = [];
+    const onDecrypted = (e) => handled.push(e.content.body);
+
+    await handleUndecryptable(client, config, "!room", enc("$1", "S1"), onDecrypted, [1, 1]);
+    await handleUndecryptable(client, config, "!room", enc("$2", "S1"), onDecrypted, [1, 1]);
+    assert.equal(sent.length, 1, "one notice for the same room key");
+    assert.equal(sent[0].body, UNDECRYPTABLE_NOTICE);
+    assert.equal(sent[0].msgtype, "m.notice");
+
+    // The key arrives during the retries: answered normally, no notice.
+    keyArrived = true;
+    await handleUndecryptable(client, config, "!room", enc("$3", "S2"), onDecrypted, [1, 1]);
+    assert.deepEqual(handled, ["hi"]);
+    assert.equal(sent.length, 1);
 });
