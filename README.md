@@ -91,6 +91,7 @@ All settings come from environment variables (loaded from `.env`). See [`.env.ex
 | `TINFOIL_TTS_MODEL` | `voxtral-tts` | Text-to-speech model for voice replies (`qwen3-tts` is the lower-latency alternative). |
 | `TINFOIL_TTS_VOICE` | `neutral_female` | Voice name; must be one the TTS model offers (see `.env.example`). |
 | `CHAT_MESSAGE_MAX_CHARS` | `1500` | Longer text replies are sent as several messages. |
+| `CHAT_MESSAGE_DELAY_SECONDS` | `10` | Pause between the messages of a long reply (and before any PDF), showing "typing", so it arrives at a reading pace. `0` sends them all at once. |
 | `VOICE_MESSAGE_MAX_CHARS` | `600` | Longer voice replies are sent as several voice messages (max 2000, the `voxtral-tts` limit). |
 
 ### PDF documents
@@ -162,7 +163,7 @@ Files are downloaded (and decrypted in encrypted rooms) by the bot, then sent to
 
 A voice message (or any audio) always gets a spoken answer, in the language spoken. In text, ask for one in your own words ("reply with a voice message", "read this aloud"); the model flags the request. Either way the model writes its answer as plain spoken text, and the bot sends it twice: first as a normal text message, then as a Matrix voice message (Ogg/Opus with a waveform) spoken with text-to-speech. Both are encrypted in encrypted rooms. If speech synthesis fails, the text reply is followed by a short note saying so. Needs `ffmpeg`.
 
-Long replies are split into several messages at paragraph or sentence breaks, so code blocks stay intact: text at `CHAT_MESSAGE_MAX_CHARS` (default 1500), voice at `VOICE_MESSAGE_MAX_CHARS` (default 600, about 50 seconds of speech). Voice has to be split anyway: `voxtral-tts` accepts at most 2000 characters per request, with Chinese, Japanese and Korean characters counting as 3. Links are left out of the spoken version.
+Long replies are split into several messages at paragraph or sentence breaks, so code blocks stay intact: text at `CHAT_MESSAGE_MAX_CHARS` (default 1500), voice at `VOICE_MESSAGE_MAX_CHARS` (default 600, about 50 seconds of speech). Voice has to be split anyway: `voxtral-tts` accepts at most 2000 characters per request, with Chinese, Japanese and Korean characters counting as 3. Links are left out of the spoken version. Between text messages the bot shows "typing" and waits `CHAT_MESSAGE_DELAY_SECONDS` (default 10), so a long answer arrives at a reading pace rather than all at once.
 
 ### Tibetan speech (optional sidecar)
 

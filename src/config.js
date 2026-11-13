@@ -94,6 +94,8 @@ export function loadConfig() {
         mediaForensics: bool(env.MEDIA_FORENSICS, true),
         // Longer replies are split into several messages.
         messageMaxChars: env.CHAT_MESSAGE_MAX_CHARS ? Number(env.CHAT_MESSAGE_MAX_CHARS) : 1500,
+        // Pause (with "typing" shown) between the messages of a long reply. 0 = send at once.
+        messageDelayMs: (env.CHAT_MESSAGE_DELAY_SECONDS ? Number(env.CHAT_MESSAGE_DELAY_SECONDS) : 10) * 1000,
         // Voice replies are split into several voice messages of at most this
         // many characters (voxtral-tts accepts at most 2000; ~600 is ~50 s).
         voiceMaxChars: Math.min(env.VOICE_MESSAGE_MAX_CHARS ? Number(env.VOICE_MESSAGE_MAX_CHARS) : 600, 2000),
@@ -117,6 +119,7 @@ export function loadConfig() {
     if (Number.isNaN(config.healthPort)) errors.push("HEALTH_PORT must be a number");
     if (Number.isNaN(config.maxAttachmentBytes)) errors.push("CHAT_MAX_ATTACHMENT_MB must be a number");
     if (!(config.wikiMaxBytes > 0)) errors.push("WIKI_MAX_MB must be a positive number");
+    if (!(config.messageDelayMs >= 0)) errors.push("CHAT_MESSAGE_DELAY_SECONDS must be a number, 0 or more");
     if (!(config.messageMaxChars >= 200)) errors.push("CHAT_MESSAGE_MAX_CHARS must be a number of at least 200");
     if (!(config.voiceMaxChars >= 100)) errors.push("VOICE_MESSAGE_MAX_CHARS must be a number from 100 to 2000");
     if (Number.isNaN(config.chat.historyTurns)) errors.push("CHAT_HISTORY_TURNS must be a number");

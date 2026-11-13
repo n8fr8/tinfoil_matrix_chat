@@ -603,10 +603,12 @@ async function respond(client, chat, config, roomId, event, text, attachmentCont
         // clients render the HTML. Voice replies get the text too, then voice.
         const parts = splitMessage(reply.text, config.messageMaxChars);
         for (const [i, part] of parts.entries()) {
+            if (i) await pause(client, roomId, config.messageDelayMs);
             await client.sendMessage(roomId, replyContent(event, part, { first: i === 0 }));
         }
         // Documents the model made (create_pdf), as files (encrypted in encrypted rooms).
         for (const f of reply.files || []) {
+            await pause(client, roomId, config.messageDelayMs);
             try {
                 const media = await uploadForRoom(client, roomId, f.data, f.mimetype, f.filename);
                 await client.sendMessage(roomId, {
@@ -639,6 +641,14 @@ async function respond(client, chat, config, roomId, event, text, attachmentCont
         if (!signal?.aborted) await client.setTyping(roomId, false).catch(() => {});
         if (tracked && inflight.get(tracked.key) === tracked) inflight.delete(tracked.key);
     }
+}
+
+// Between the messages of a long reply: show "typing" and wait, so the reply
+// arrives at a reading pace instead of all at once (CHAT_MESSAGE_DELAY_SECONDS).
+async function pause(client, roomId, ms) {
+    if (!(ms > 0)) return;
+    await client.setTyping(roomId, true, ms + 5000).catch(() => {});
+    await new Promise((r) => setTimeout(r, ms));
 }
 
 // Runs the chat with this room's wiki (one message at a time per room) and

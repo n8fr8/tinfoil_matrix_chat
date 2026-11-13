@@ -9,10 +9,11 @@ const WAIT = Number(process.env.FILE_NOTE_WAIT_MS) || 6000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const config = { commandPrefix: "", maxAttachmentBytes: 25e6, messageMaxChars: 1500, voiceMaxChars: 600 };
 
-function setup({ chatDelay = 0 } = {}) {
+function setup({ chatDelay = 0, reply = null, cfg = config } = {}) {
     const events = {};
     const sent = [];
     const calls = [];
+    const log = []; // sent messages and typing changes, in order
     const client = {
         crypto: null,
         async getEvent(_room, id) {
@@ -23,9 +24,12 @@ function setup({ chatDelay = 0 } = {}) {
         },
         async sendMessage(_room, content) {
             sent.push(content);
+            log.push("msg");
             return `$sent${sent.length}`;
         },
-        async setTyping() {},
+        async setTyping(_room, on) {
+            log.push(on ? "typing" : "stop");
+        },
     };
     const chat = {
         wikiStore: null,
@@ -35,7 +39,7 @@ function setup({ chatDelay = 0 } = {}) {
             return new Promise((resolve, reject) => {
                 const t = setTimeout(() => {
                     call.result = "answered";
-                    resolve({ text: `reply to "${text}"`, voice: false });
+                    resolve({ text: reply ?? `reply to "${text}"`, voice: false });
                 }, chatDelay);
                 signal?.addEventListener("abort", () => {
                     clearTimeout(t);
@@ -46,8 +50,8 @@ function setup({ chatDelay = 0 } = {}) {
         },
     };
     const add = (ev) => (events[ev.event_id] = { sender: "@me:x", origin_server_ts: Date.now(), ...ev });
-    const send = (ev) => handleMessage(client, chat, config, "@bot:x", "!room", add(ev));
-    return { send, sent, calls };
+    const send = (ev) => handleMessage(client, chat, cfg, "@bot:x", "!room", add(ev));
+    return { send, sent, calls, log };
 }
 
 const text = (id, body, extra = {}) => ({ event_id: id, content: { msgtype: "m.text", body, ...extra } });
@@ -158,4 +162,15 @@ test("undecryptable message: retried, then one notice per room key", async () =>
     await handleUndecryptable(client, config, "!room", enc("$3", "S2"), onDecrypted, [1, 1]);
     assert.deepEqual(handled, ["hi"]);
     assert.equal(sent.length, 1);
+});
+
+test("long replies: typing and a pause between messages", async () => {
+    const para = "word ".repeat(70).trim();
+    const { send, sent, log } = setup({ reply: [para, para, para].join("\n\n"), cfg: { ...config, messageMaxChars: 400, messageDelayMs: 50 } });
+    const t0 = Date.now();
+    await send(text("$t1", "explain at length"));
+    assert.equal(sent.length, 3);
+    assert.ok(Date.now() - t0 >= 100, "two pauses of 50 ms");
+    // "typing" is switched on again before each later message.
+    assert.deepEqual(log.slice(-6), ["msg", "typing", "msg", "typing", "msg", "stop"]);
 });
