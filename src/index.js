@@ -103,15 +103,16 @@ const isSyncing = (a) => a.started && a.lastSyncAt > 0 && Date.now() - a.lastSyn
 
 // The /health body. Top-level fields describe the first account, as before
 // there were several; `accounts` lists each one. "ok" when at least one account
-// is syncing and none that started has stopped syncing (an account that can't
-// log in shows its error but doesn't make the container unhealthy, which would
-// restart the accounts that work).
+// is syncing and none that has synced has stopped (an account that can't log
+// in, or whose first sync is still running, shows that but doesn't make the
+// container unhealthy, which would restart the accounts that work and cost
+// them their devices).
 function healthStatus(shared, accounts, startedAt) {
     const age = (a) => (a.lastSyncAt ? Math.round((Date.now() - a.lastSyncAt) / 1000) : null);
     const first = accounts[0] || { started: false, lastSyncAt: 0 };
     const error = shared.error || first.error;
     return {
-        ok: accounts.some(isSyncing) && accounts.every((a) => !a.started || isSyncing(a)),
+        ok: accounts.some(isSyncing) && accounts.every((a) => !a.lastSyncAt || isSyncing(a)),
         started: first.started,
         secondsSinceLastSync: age(first),
         uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
@@ -240,7 +241,9 @@ async function startAccount(config, setup, state, { single, startedAt }) {
     // Record successful syncs for the status endpoint.
     const doSync = client.doSync.bind(client);
     let restarting = false;
+    let syncCalls = 0;
     client.doSync = async (...args) => {
+        syncCalls++;
         try {
             const res = await doSync(...args);
             state.lastSyncAt = Date.now();
@@ -267,7 +270,9 @@ async function startAccount(config, setup, state, { single, startedAt }) {
             throw err;
         }
     };
-    if (config.autojoin) setupAutojoin(client, log);
+    // Invites from the first sync (all waiting invites, since the container has
+    // no saved sync token) are old; they are processed before the second sync starts.
+    if (config.autojoin) setupAutojoin(client, log, { startedAt, firstSync: () => syncCalls <= 1 });
 
     // Topic prompts: this account's subset of the shared library.
     const topics = config.chat.topics.length ? setup.topicPrompts.filter((p) => config.chat.topics.includes(p.name)) : setup.topicPrompts;
@@ -339,10 +344,17 @@ function serverName(userId) {
 // inviter's homeserver as a "via" hint (required to join rooms over federation
 // when the bot and inviter are on different servers) and log the outcome, so a
 // failed join is visible instead of silently swallowed.
-function setupAutojoin(client, log = "melong") {
+function setupAutojoin(client, log = "melong", { startedAt = 0, firstSync = () => false } = {}) {
     client.on("room.invite", async (roomId, inviteEvent) => {
         const sender = inviteEvent?.sender;
         const isDirect = inviteEvent?.content?.is_direct === true;
+        // Only invites sent while the bot runs. An account with a backlog of old
+        // invites would otherwise join every one of them on each fresh start.
+        const ts = inviteEvent?.origin_server_ts;
+        if (ts ? ts < startedAt : firstSync()) {
+            LogService.debug(log, `Ignoring an invite to ${roomId} from before the bot started`);
+            return;
+        }
         const via = [...new Set([serverName(sender), serverName(inviteEvent?.state_key)].filter(Boolean))];
         LogService.info(log, `Invited to ${roomId} by ${sender}${isDirect ? " (DM)" : ""}; joining via [${via.join(", ")}]`);
         try {

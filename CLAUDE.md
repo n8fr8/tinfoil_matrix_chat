@@ -56,7 +56,7 @@ tinfoil-config.yml    the measured container config (public; no secret values)
 
 ## Behaviors that look odd but are deliberate
 
-**Several accounts (`MATRIX_ACCOUNTS`):** `main()` does shared setup once (`sharedSetup`), then `runAccount`/`startAccount` per account, each with its own retry loop and `ChatClient`. Other accounts read `<ID>_<SETTING>` variables. Handling state (`pendingFiles`, `inflight`, room member cache) is keyed by the bot's user ID too, since two accounts in one room see the same events. In a room with two of our accounts, each answers only messages addressed to it (`inSharedRoom`, `addressedToMe`).
+**Several accounts (`MATRIX_ACCOUNTS`):** `main()` does shared setup once (`sharedSetup`), then `runAccount`/`startAccount` per account, each with its own retry loop and `ChatClient`. Other accounts read `<ID>_<SETTING>` variables. Handling state (`pendingFiles`, `inflight`, room member cache) is keyed by the bot's user ID too, since two accounts in one room see the same events. In a room with two of our accounts, each answers only messages addressed to it (`inSharedRoom`, `addressedToMe`). Autojoin skips invites from before startup (the first sync replays every waiting invite). The v0.3.23 rollout with `@zomkyibot:nang.zom.im` (1,221 rooms, 1,389 old invites) never finished its first sync, `/health` went 503 and the container restarted; rolled back to v0.3.22 the same day.
 
 **Client quirks** (the owner's Matrix client; verified from event order and relations, see Testing):
 - A voice note arrives as a short placeholder text ("Sent 1 media items.") plus the audio as a **thread reply** under it.

@@ -120,7 +120,9 @@ How they behave:
 - No account answers another one of ours, so two of them in one room don't talk to each other.
 - In a room with more than one of our accounts, each answers only messages addressed to it: a mention (a pill, or its name at the start, as in "Tibetan Tutor: ..."), a reply to one of its messages, or its command prefix. Files and voice notes count when their caption or the note that comes with them is addressed to it. In a DM, or a room with only one of our accounts, it answers everything, as before.
 - Accounts start and retry on their own; one that can't log in doesn't stop the others. If one account's login is revoked, only that account logs in again (with a single account, the process still exits so the container restarts).
-- `/health` lists each account under `accounts`; the top-level fields describe the first one. `ok` is true when at least one account is syncing and none that started has stopped.
+- `/health` lists each account under `accounts`; the top-level fields describe the first one. `ok` is true when at least one account is syncing and none that has synced has stopped. An account whose first sync is slow (one with many rooms) doesn't make the container unhealthy.
+- Autojoin only accepts invites sent while the bot runs, for every account. Invites that were waiting before a start are ignored, so an account with a backlog of old invites doesn't join them all.
+- Use an account made for the bot. With no command prefix, an account answers every message in every room it is in.
 - In the container, every account's homeserver must be in the egress `allow` list, and its secrets listed under `secrets:` in `tinfoil-config.yml`.
 
 Design notes: [docs/multi-account-spec.md](docs/multi-account-spec.md).
