@@ -33,7 +33,7 @@ networks:
 
 containers:
   - name: "melong-bot"
-    image: "ghcr.io/n8fr8/tinfoil_matrix_chat:placeholder"
+    image: "ghcr.io/n8fr8/tinfoil_matrix_chat@sha256:d610656aa3af13c40cdba1d8597de5b01e80e506ae070f6de143174deecd0c89" # v0.3.24
     restart: always
     # Run as root inside the sandbox: Tinfoil mounts the tmpfs paths below owned
     # by root, so the image's unprivileged "node" user can't write to them. The
@@ -92,7 +92,7 @@ containers:
   # (ganga4364/wav2vec2-combine-dialect-model-v2-47000) on CPU. Weights are baked
   # into the image at pinned revisions; see docs/tibetan-speech-models.md for licenses.
   - name: "speech"
-    image: "ghcr.io/n8fr8/tinfoil_matrix_chat-speech:placeholder"
+    image: "ghcr.io/n8fr8/tinfoil_matrix_chat-speech@sha256:5ef07f7d62873d8de55ab5bff15912f128aa50d176f691780612b599a4b0f791" # v0.3.24
     restart: always
     networks: [internal]
     tmpfs:
