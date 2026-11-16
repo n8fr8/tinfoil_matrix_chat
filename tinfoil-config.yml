@@ -20,6 +20,7 @@ networks:
     egress: allowlist
     allow:
       - wick.keanu.im             # Matrix homeserver (must match MATRIX_HOMESERVER_URL)
+      - nang.zom.im               # second account's homeserver (ZOMKYI_MATRIX_HOMESERVER_URL)
       - inference.tinfoil.sh      # Tinfoil inference API
       # inference.tinfoil.sh is a CNAME chain ending here; listed explicitly in
       # case the egress firewall doesn't follow CNAMEs.
@@ -60,6 +61,13 @@ containers:
       - HEALTH_PORT: "8080"
       - SPEECH_URL: "http://speech:8000"
       - SPEECH_STT: "auto"
+      # Several accounts (README, "Several accounts"): the first uses the
+      # MATRIX_* settings, the others <ID>_MATRIX_* (and any other <ID>_ setting).
+      - MATRIX_ACCOUNTS: "main,zomkyi"
+      - ZOMKYI_MATRIX_HOMESERVER_URL: "https://nang.zom.im"
+      - ZOMKYI_MATRIX_USERNAME: "@zomkyibot:nang.zom.im"
+      - ZOMKYI_MATRIX_DEVICE_NAME: "zomkyi-bot"
+      - ZOMKYI_MATRIX_DISPLAY_NAME: "Zomkyi"
       # Values for these bare names are set per instance when deploying.
       - MATRIX_USERNAME
       - MATRIX_DISPLAY_NAME
@@ -69,6 +77,8 @@ containers:
       - MATRIX_PASSWORD
       - MATRIX_CROSS_SIGNING_KEY
       - WIKI_ENCRYPTION_KEY
+      - ZOMKYI_MATRIX_PASSWORD
+      - ZOMKYI_MATRIX_CROSS_SIGNING_KEY
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
