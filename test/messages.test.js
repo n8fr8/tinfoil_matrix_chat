@@ -227,3 +227,17 @@ test("several accounts: a file, then a note to one account: only that account an
     assert.deepEqual(a.calls.map((c) => [c.text, c.files]), [["summarize this", ["doc.pdf"]]]);
     assert.equal(b.calls.length, 0);
 });
+
+test("command prefix: required in group rooms, optional in a DM", async () => {
+    const cfg = { ...config, commandPrefix: "!zomkyi" };
+    const group = setup({ cfg, room: "!group1", members: ["@me:x", "@you:x", "@bot:x"] });
+    await group.send(text("$1", "hello all"));
+    await group.send(text("$2", "!zomkyi what is Tor?"));
+    assert.deepEqual(group.calls.map((c) => c.text), ["what is Tor?"]);
+
+    const dm = setup({ cfg, room: "!dm3", members: ["@me:x", "@bot:x"] });
+    await dm.send(text("$3", "hello"));
+    await dm.send(text("$4", "!zomkyi what is a VPN?"));
+    await dm.send(file("$f", { body: "summarize this" }));
+    assert.deepEqual(dm.calls.map((c) => [c.text, c.files]), [["hello", []], ["what is a VPN?", []], ["summarize this", ["doc.pdf"]]]);
+});

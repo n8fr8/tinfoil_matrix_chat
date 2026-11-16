@@ -72,7 +72,7 @@ All settings come from environment variables (loaded from `.env`). See [`.env.ex
 | `MATRIX_ENCRYPTION` | `true` | Enable E2EE (Rust crypto store). |
 | `MATRIX_CROSS_SIGNING_KEY` | — | The bot's private cross-signing keys, made by `npm run cross-signing`. The bot signs each new device with them. Needed when storage doesn't survive restarts (containers). See [How storage works](#how-storage-works-in-the-container). |
 | `MATRIX_AUTOJOIN` | `true` | Auto-join on invite. |
-| `MATRIX_COMMAND_PREFIX` | _(empty)_ | If set, only reply to messages starting with this. |
+| `MATRIX_COMMAND_PREFIX` | _(empty)_ | If set, only reply to messages starting with this in group rooms. In a DM (the bot and one other person) it is optional. |
 | `TINFOIL_API_KEY` | — | Tinfoil API key (read by the SDK automatically). |
 | `TINFOIL_MODEL` | `deepseek-v4-1-flash` | Model ID from the [Tinfoil catalog](https://docs.tinfoil.sh/models/overview). `deepseek-v4-1-flash` is fast and writes clean Tibetan; `kimi-k3` also writes clean Tibetan but is 5–10x slower; `gemma4-31b` mixes other scripts into Tibetan replies. See [docs/tibetan-speech-models.md](docs/tibetan-speech-models.md#reply-model-llm). |
 | `CHAT_SYSTEM_PROMPT` | _friendly general assistant_ | The bot's personality / instructions. |
@@ -122,7 +122,8 @@ How they behave:
 - Accounts start and retry on their own; one that can't log in doesn't stop the others. If one account's login is revoked, only that account logs in again (with a single account, the process still exits so the container restarts).
 - `/health` lists each account under `accounts`; the top-level fields describe the first one. `ok` is true when at least one account is syncing and none that has synced has stopped. An account whose first sync is slow (one with many rooms) doesn't make the container unhealthy.
 - Autojoin only accepts invites sent while the bot runs, for every account. Invites that were waiting before a start are ignored, so an account with a backlog of old invites doesn't join them all.
-- Use an account made for the bot. With no command prefix, an account answers every message in every room it is in.
+- Every account syncs with lazy-loaded members and without presence, so an account in many rooms starts faster.
+- Use an account made for the bot, or give it a command prefix. With no command prefix, an account answers every message in every room it is in.
 - In the container, every account's homeserver must be in the egress `allow` list, and its secrets listed under `secrets:` in `tinfoil-config.yml`.
 
 Design notes: [docs/multi-account-spec.md](docs/multi-account-spec.md).
@@ -242,7 +243,7 @@ The container's storage is in memory and is wiped on every restart. So the conta
 
 Current Element clients only share room keys with devices that their owner has cross-signed, so an unsigned new device can't read anything. To keep the bot readable across restarts, run `npm run cross-signing` once: it gives the bot account a cross-signing identity and saves the private keys to `.env` as `MATRIX_CROSS_SIGNING_KEY`. Store that as a container secret, and the bot signs each new device at startup (`/health` shows `"crossSigning": "signed"`). With [several accounts](#several-accounts), run `npm run cross-signing -- <id>` for each other account; it writes `<ID>_MATRIX_CROSS_SIGNING_KEY`. Running it replaces any identity the account had, so people may see a one-time "identity changed" notice for the bot. Don't log in to the bot account with Element afterwards and reset its identity there, or the key stops matching.
 
-Consequences: after a restart the bot can't read encrypted messages sent before it came back. Some apps also keep encrypting with the room key they had before the restart and never share it with the new device, so the bot can't read new messages in existing rooms either (seen 2026-11-13). When a message can't be decrypted, the bot retries for about 30 s, because the key sometimes arrives late. If it never does, the bot posts one notice per room key saying so, with the fix: `/discardsession` in Element, or a new room. The notice is skipped when `MATRIX_COMMAND_PREFIX` is set. Tinfoil's [encrypted persistent volumes](https://docs.tinfoil.sh/containers/encrypted-volumes) (beta, needs your own keyserver) could keep state across restarts.
+Consequences: after a restart the bot can't read encrypted messages sent before it came back. Some apps also keep encrypting with the room key they had before the restart and never share it with the new device, so the bot can't read new messages in existing rooms either (seen 2026-11-13). When a message can't be decrypted, the bot retries for about 30 s, because the key sometimes arrives late. If it never does, the bot posts one notice per room key saying so, with the fix: `/discardsession` in Element, or a new room. The notice is skipped in group rooms when `MATRIX_COMMAND_PREFIX` is set. Tinfoil's [encrypted persistent volumes](https://docs.tinfoil.sh/containers/encrypted-volumes) (beta, needs your own keyserver) could keep state across restarts.
 
 **Don't run the bot locally and in the container with the same account and device name at the same time.** Each start removes the other's device.
 

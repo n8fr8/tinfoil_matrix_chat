@@ -320,7 +320,7 @@ async function startAccount(config, setup, state, { single, startedAt }) {
         });
     }
 
-    await client.start();
+    await client.start(SYNC_FILTER);
     state.started = true;
     if (crossSigningKeys) {
         state.crossSigning = await signOwnDevice(client, crossSigningKeys);
@@ -333,6 +333,19 @@ async function startAccount(config, setup, state, { single, startedAt }) {
     }
     LogService.info(log, `Bot started as ${botUserId} (encryption ${config.encryption ? "on" : "off"})`);
 }
+
+// Sync filter for every account. Without one, the first sync of a fresh
+// container sends every member of every room; an account in 1,000+ rooms then
+// takes minutes to start. Members are loaded only for senders (lazy loading;
+// encryption fetches the full list itself when it sends), and presence is off.
+const SYNC_FILTER = {
+    presence: { types: [] },
+    room: {
+        state: { lazy_load_members: true },
+        timeline: { lazy_load_members: true },
+        ephemeral: { types: [] },
+    },
+};
 
 // Returns the homeserver part of a Matrix user ID, e.g. "@bob:example.org" -> "example.org".
 function serverName(userId) {
@@ -391,9 +404,8 @@ const logOf = (config) => config.logModule || "melong";
 // cached for a minute per account and room.
 const ROOM_MEMBERS_TTL_MS = 60 * 1000;
 const roomMembers = new Map();
-async function inSharedRoom(client, config, botUserId, roomId) {
-    const ours = config.ownUserIds;
-    if (!(ours?.size > 1)) return false;
+// The room's joined members (a Set), or null if they can't be listed.
+async function joinedMembers(client, config, botUserId, roomId) {
     const key = `${botUserId}|${roomId}`;
     let entry = roomMembers.get(key);
     if (!entry || Date.now() - entry.at > ROOM_MEMBERS_TTL_MS) {
@@ -401,11 +413,27 @@ async function inSharedRoom(client, config, botUserId, roomId) {
             entry = { at: Date.now(), members: new Set(await client.getJoinedRoomMembers(roomId)) };
         } catch (err) {
             LogService.warn(logOf(config), `Couldn't list the members of ${roomId}: ${err?.message || err}`);
-            return false;
+            return null;
         }
         roomMembers.set(key, entry);
     }
-    return [...ours].some((id) => id !== botUserId && entry.members.has(id));
+    return entry.members;
+}
+
+async function inSharedRoom(client, config, botUserId, roomId) {
+    const ours = config.ownUserIds;
+    if (!(ours?.size > 1)) return false;
+    const members = await joinedMembers(client, config, botUserId, roomId);
+    return Boolean(members) && [...ours].some((id) => id !== botUserId && members.has(id));
+}
+
+// The command prefix applies in group rooms only: in a DM (the bot and one
+// other person) every message is for the bot, with or without the prefix.
+async function configForRoom(client, config, botUserId, roomId) {
+    if (!config.commandPrefix) return config;
+    const members = await joinedMembers(client, config, botUserId, roomId);
+    if (members?.size !== 2 || !members.has(botUserId)) return config;
+    return { ...config, commandPrefix: "", optionalPrefix: config.commandPrefix };
 }
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -438,7 +466,7 @@ function stripMention(text, config, botUserId) {
 
 // Strips the command prefix. Returns null when a prefix is set and missing.
 function stripPrefix(config, text) {
-    if (!config.commandPrefix) return text;
+    if (!config.commandPrefix) return config.optionalPrefix && text.startsWith(config.optionalPrefix) ? text.slice(config.optionalPrefix.length).trim() : text;
     if (!text.startsWith(config.commandPrefix)) return null;
     return text.slice(config.commandPrefix.length).trim();
 }
@@ -447,6 +475,7 @@ async function handleMessage(client, chat, config, botUserId, roomId, event) {
     const content = event?.content;
     // Ignore our own messages, and those of the other accounts this instance runs.
     if (!content || event.sender === botUserId || config.ownUserIds?.has(event.sender)) return;
+    config = await configForRoom(client, config, botUserId, roomId);
     LogService.debug(logOf(config), `Message ${event.event_id} msgtype=${content.msgtype} keys=${Object.keys(content).join(",")}`);
 
     const media = mediaItems(content);
@@ -477,7 +506,7 @@ async function handleMessage(client, chat, config, botUserId, roomId, event) {
     body = stripPrefix(config, body);
     if (body === null) return;
     if (!body) {
-        await replyNotice(client, roomId, event, `Usage: ${config.commandPrefix} <your message>`);
+        await replyNotice(client, roomId, event, `Usage: ${config.commandPrefix || config.optionalPrefix} <your message>`);
         return;
     }
 
@@ -556,8 +585,11 @@ async function handleUndecryptable(client, config, roomId, event, onDecrypted, r
         } catch {}
     }
     // With a prefix, or with another of our accounts in the room, an unreadable message may not be for this account.
-    if (config.commandPrefix) return;
-    if (config.ownUserIds?.size > 1 && (await inSharedRoom(client, config, await client.getUserId(), roomId))) return;
+    if (config.commandPrefix || config.ownUserIds?.size > 1) {
+        const botUserId = await client.getUserId();
+        if ((await configForRoom(client, config, botUserId, roomId)).commandPrefix) return;
+        if (await inSharedRoom(client, config, botUserId, roomId)) return;
+    }
     const key = `${roomId}|${event.content?.session_id || event.content?.sender_key || ""}`;
     if (undecryptableNoticed.has(key)) return;
     undecryptableNoticed.add(key);

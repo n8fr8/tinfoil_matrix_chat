@@ -68,6 +68,8 @@ containers:
       - ZOMKYI_MATRIX_USERNAME: "@zomkyibot:nang.zom.im"
       - ZOMKYI_MATRIX_DEVICE_NAME: "zomkyi-bot"
       - ZOMKYI_MATRIX_DISPLAY_NAME: "Zomkyi"
+      # This account is in 1,200+ rooms: in group rooms, reply only to "!zomkyi ..." (DMs need no prefix).
+      - ZOMKYI_MATRIX_COMMAND_PREFIX: "!zomkyi"
       # Values for these bare names are set per instance when deploying.
       - MATRIX_USERNAME
       - MATRIX_DISPLAY_NAME
