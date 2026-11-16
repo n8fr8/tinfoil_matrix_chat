@@ -9,7 +9,7 @@ const WAIT = Number(process.env.FILE_NOTE_WAIT_MS) || 6000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const config = { commandPrefix: "", maxAttachmentBytes: 25e6, messageMaxChars: 1500, voiceMaxChars: 600 };
 
-function setup({ chatDelay = 0, reply = null, cfg = config } = {}) {
+function setup({ chatDelay = 0, reply = null, cfg = config, bot = "@bot:x", room = "!room", members = [] } = {}) {
     const events = {};
     const sent = [];
     const calls = [];
@@ -29,6 +29,9 @@ function setup({ chatDelay = 0, reply = null, cfg = config } = {}) {
         },
         async setTyping(_room, on) {
             log.push(on ? "typing" : "stop");
+        },
+        async getJoinedRoomMembers() {
+            return members;
         },
     };
     const chat = {
@@ -50,8 +53,8 @@ function setup({ chatDelay = 0, reply = null, cfg = config } = {}) {
         },
     };
     const add = (ev) => (events[ev.event_id] = { sender: "@me:x", origin_server_ts: Date.now(), ...ev });
-    const send = (ev) => handleMessage(client, chat, cfg, "@bot:x", "!room", add(ev));
-    return { send, sent, calls, log };
+    const send = (ev) => handleMessage(client, chat, cfg, bot, room, add(ev));
+    return { send, add, sent, calls, log };
 }
 
 const text = (id, body, extra = {}) => ({ event_id: id, content: { msgtype: "m.text", body, ...extra } });
@@ -173,4 +176,54 @@ test("long replies: typing and a pause between messages", async () => {
     assert.ok(Date.now() - t0 >= 100, "two pauses of 50 ms");
     // "typing" is switched on again before each later message.
     assert.deepEqual(log.slice(-6), ["msg", "typing", "msg", "typing", "msg", "stop"]);
+});
+
+// Several accounts in one instance (MATRIX_ACCOUNTS): "@bot:x" and "@tutor:x".
+const ours = () => new Set(["@bot:x", "@tutor:x"]);
+const sharedSetup = (room, opts = {}) =>
+    setup({ cfg: { ...config, displayName: "Zomkyi", ownUserIds: ours() }, room, members: ["@me:x", "@bot:x", "@tutor:x"], ...opts });
+
+test("several accounts: messages from our other accounts are ignored", async () => {
+    const { send, calls } = setup({ cfg: { ...config, ownUserIds: ours() }, room: "!dm1", members: ["@bot:x", "@tutor:x"] });
+    await send({ ...text("$t", "hello"), sender: "@tutor:x" });
+    assert.equal(calls.length, 0);
+});
+
+test("several accounts: in a DM (no other account of ours there) every message is answered", async () => {
+    const { send, calls } = setup({ cfg: { ...config, ownUserIds: ours() }, room: "!dm2", members: ["@me:x", "@bot:x"] });
+    await send(text("$t", "hello"));
+    assert.deepEqual(calls.map((c) => c.text), ["hello"]);
+});
+
+test("several accounts: in a shared room only messages addressed to this account are answered", async () => {
+    const { send, add, calls } = sharedSetup("!shared1");
+    await send(text("$1", "hello everyone"));
+    await send(text("$2", "Zomkyi: what is a VPN?"));
+    await send(text("$3", "Zomkyi what is Tor?"));
+    await send(text("$4", "tutor: hi", { "m.mentions": { user_ids: ["@tutor:x"] } }));
+    await send(text("$5", "explain", { "m.mentions": { user_ids: ["@bot:x"] } }));
+    add({ event_id: "$mine", sender: "@bot:x", content: { msgtype: "m.text", body: "an earlier answer" } });
+    await send(text("$6", "> <@bot:x> an earlier answer\n\ntell me more", { "m.relates_to": { "m.in_reply_to": { event_id: "$mine" } } }));
+    assert.deepEqual(
+        calls.map((c) => c.text.replace(/^\[Replying[\s\S]*\n\n/, "")),
+        ["what is a VPN?", "what is Tor?", "explain", "tell me more"],
+    );
+});
+
+test("several accounts: in a shared room an unaddressed file or voice note is left alone", async () => {
+    const { send, calls } = sharedSetup("!shared2");
+    await send(file("$f"));
+    await send({ event_id: "$v", content: { msgtype: "m.audio", body: "voice.ogg", url: "mxc://x/v", info: { mimetype: "audio/ogg", size: 10 } } });
+    await sleep(WAIT + 300);
+    assert.equal(calls.length, 0);
+});
+
+test("several accounts: a file, then a note to one account: only that account answers, with the file", async () => {
+    const a = sharedSetup("!shared3");
+    const b = sharedSetup("!shared3", { bot: "@tutor:x", cfg: { ...config, displayName: "Tutor", ownUserIds: ours() } });
+    for (const s of [a, b]) await s.send(file("$f"));
+    for (const s of [a, b]) await s.send(text("$n", "Zomkyi: summarize this"));
+    await sleep(WAIT + 300);
+    assert.deepEqual(a.calls.map((c) => [c.text, c.files]), [["summarize this", ["doc.pdf"]]]);
+    assert.equal(b.calls.length, 0);
 });

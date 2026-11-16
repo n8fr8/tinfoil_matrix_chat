@@ -9,27 +9,41 @@
 //   bot may see a one-time "identity changed" notice.
 // - Store the same value as the MATRIX_CROSS_SIGNING_KEY secret for the
 //   container: tinfoil secret create MATRIX_CROSS_SIGNING_KEY --value-file -
+// - Another account in MATRIX_ACCOUNTS: npm run cross-signing -- tutor
+//   (reads TUTOR_MATRIX_*, writes TUTOR_MATRIX_CROSS_SIGNING_KEY).
 
 import { MatrixAuth } from "matrix-bot-sdk";
 import { promises as fs } from "node:fs";
+import { accountIds, accountVar } from "./config.js";
 import { crossSigningUploadBody, generateCrossSigningKeys, parseCrossSigningKey } from "./cross-signing.js";
 
 const ENV_FILE = ".env";
-const { MATRIX_HOMESERVER_URL: homeserverUrl, MATRIX_USERNAME: username, MATRIX_PASSWORD: password } = process.env;
+// With several accounts (MATRIX_ACCOUNTS): npm run cross-signing -- <account id>
+const ids = accountIds();
+const id = (process.argv[2] || ids[0]).toLowerCase();
+if (!ids.includes(id)) {
+    console.error(`Unknown account "${id}". MATRIX_ACCOUNTS has: ${ids.join(", ")}`);
+    process.exit(1);
+}
+const v = (name) => accountVar(id, name, id === ids[0]);
+const KEY_VAR = v("MATRIX_CROSS_SIGNING_KEY");
+const homeserverUrl = process.env[v("MATRIX_HOMESERVER_URL")] || process.env.MATRIX_HOMESERVER_URL;
+const username = process.env[v("MATRIX_USERNAME")];
+const password = process.env[v("MATRIX_PASSWORD")];
 if (!homeserverUrl || !username || !password) {
-    console.error("Set MATRIX_HOMESERVER_URL, MATRIX_USERNAME and MATRIX_PASSWORD (e.g. in .env) first.");
+    console.error(`Set ${v("MATRIX_HOMESERVER_URL")}, ${v("MATRIX_USERNAME")} and ${v("MATRIX_PASSWORD")} (e.g. in .env) first.`);
     process.exit(1);
 }
 
 let keys;
-if (process.env.MATRIX_CROSS_SIGNING_KEY) {
-    keys = parseCrossSigningKey(process.env.MATRIX_CROSS_SIGNING_KEY);
-    console.log("Using MATRIX_CROSS_SIGNING_KEY from the environment.");
+if (process.env[KEY_VAR]) {
+    keys = parseCrossSigningKey(process.env[KEY_VAR]);
+    console.log(`Using ${KEY_VAR} from the environment.`);
 } else {
     const generated = generateCrossSigningKeys();
     keys = generated.keys;
     await saveToEnvFile(generated.secret);
-    console.log(`Generated new cross-signing keys and saved them to ${ENV_FILE} as MATRIX_CROSS_SIGNING_KEY.`);
+    console.log(`Generated new cross-signing keys and saved them to ${ENV_FILE} as ${KEY_VAR}.`);
 }
 
 // A short-lived session just for this; logged out at the end.
@@ -55,7 +69,7 @@ try {
         }
         console.log(`Uploaded cross-signing keys for ${userId} (master ${keys.master.publicKey}).`);
     }
-    console.log("\nNext: store MATRIX_CROSS_SIGNING_KEY as a container secret and restart the bot. It signs its own device at startup.");
+    console.log(`\nNext: store ${KEY_VAR} as a container secret and restart the bot. It signs its own device at startup.`);
 } finally {
     await client.doRequest("POST", "/_matrix/client/v3/logout").catch(() => {});
 }
@@ -65,9 +79,10 @@ async function saveToEnvFile(secret) {
     try {
         text = await fs.readFile(ENV_FILE, "utf8");
     } catch {}
-    const line = `MATRIX_CROSS_SIGNING_KEY=${secret}`;
-    text = /^MATRIX_CROSS_SIGNING_KEY=.*$/m.test(text)
-        ? text.replace(/^MATRIX_CROSS_SIGNING_KEY=.*$/m, line)
+    const line = `${KEY_VAR}=${secret}`;
+    const re = new RegExp(`^${KEY_VAR}=.*$`, "m");
+    text = re.test(text)
+        ? text.replace(re, () => line)
         : `${text}${text && !text.endsWith("\n") ? "\n" : ""}${line}\n`;
     await fs.writeFile(ENV_FILE, text, { mode: 0o600 });
 }

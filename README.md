@@ -20,6 +20,7 @@ Send the bot a message and it replies. It remembers recent messages in each room
 - Checks photos, videos, audio and ProofMode proof bundles for Content Credentials (C2PA), metadata and signatures, and helps with open-source investigation. See [Media forensics](#media-forensics).
 - Makes PDF documents on request ("make this a printable document", "send me a PDF handout"), in any language including Tibetan. See [PDF documents](#pdf-documents).
 - Remembers the last few exchanges per room (in memory; cleared on restart or with `!reset`).
+- Can run several Matrix accounts (personas, or one per homeserver) from one instance, sharing the Tinfoil client and the speech service. See [Several accounts](#several-accounts).
 
 ## Requirements
 
@@ -93,6 +94,36 @@ All settings come from environment variables (loaded from `.env`). See [`.env.ex
 | `CHAT_MESSAGE_MAX_CHARS` | `1500` | Longer text replies are sent as several messages. |
 | `CHAT_MESSAGE_DELAY_SECONDS` | `10` | Pause between the messages of a long reply (and before any PDF), showing "typing", so it arrives at a reading pace. `0` sends them all at once. |
 | `VOICE_MESSAGE_MAX_CHARS` | `600` | Longer voice replies are sent as several voice messages (max 2000, the `voxtral-tts` limit). |
+| `MATRIX_ACCOUNTS` | _(one account)_ | Comma-separated account IDs, e.g. `main,tutor`, to run several accounts. See [Several accounts](#several-accounts). |
+| `CHAT_PROMPTS` | _(all)_ | Topic prompts this account may use, e.g. `history,legal`. |
+| `CHAT_DEFAULT_TOPIC` | — | A topic prompt whose guidance is added to every request (e.g. a tutor that always teaches). |
+
+### Several accounts
+
+One instance can run several Matrix accounts, for example a general assistant and a Tibetan tutor, or the same bot on two homeservers. They share the Tinfoil client, the Tibetan speech service and the topic prompts; each has its own login, device, encryption store, cross-signing identity, conversation history and room memory.
+
+List the account IDs in `MATRIX_ACCOUNTS`. The first one uses the plain variables above. Each other account reads the same variables with its ID in front, in capitals: `TUTOR_MATRIX_USERNAME`, `TUTOR_CHAT_SYSTEM_PROMPT`, `TUTOR_TINFOIL_MODEL`, and so on. A setting it doesn't set comes from the first account, except the credentials, display name and storage paths (`MATRIX_ACCESS_TOKEN`, `MATRIX_USERNAME`, `MATRIX_PASSWORD`, `MATRIX_CROSS_SIGNING_KEY`, `MATRIX_DISPLAY_NAME`, `MATRIX_*_PATH`), which never fall back. Its data goes in `data/<id>/`.
+
+```sh
+MATRIX_ACCOUNTS=main,tutor
+TUTOR_MATRIX_HOMESERVER_URL=https://nang.zom.im
+TUTOR_MATRIX_USERNAME=tutorbot
+TUTOR_MATRIX_PASSWORD=...             # secret
+TUTOR_MATRIX_CROSS_SIGNING_KEY=...    # secret; npm run cross-signing -- tutor
+TUTOR_MATRIX_DISPLAY_NAME=Tibetan Tutor
+TUTOR_CHAT_SYSTEM_PROMPT=You are a patient Tibetan language tutor...
+TUTOR_CHAT_PROMPTS=history
+```
+
+How they behave:
+
+- No account answers another one of ours, so two of them in one room don't talk to each other.
+- In a room with more than one of our accounts, each answers only messages addressed to it: a mention (a pill, or its name at the start, as in "Tibetan Tutor: ..."), a reply to one of its messages, or its command prefix. Files and voice notes count when their caption or the note that comes with them is addressed to it. In a DM, or a room with only one of our accounts, it answers everything, as before.
+- Accounts start and retry on their own; one that can't log in doesn't stop the others. If one account's login is revoked, only that account logs in again (with a single account, the process still exits so the container restarts).
+- `/health` lists each account under `accounts`; the top-level fields describe the first one. `ok` is true when at least one account is syncing and none that started has stopped.
+- In the container, every account's homeserver must be in the egress `allow` list, and its secrets listed under `secrets:` in `tinfoil-config.yml`.
+
+Design notes: [docs/multi-account-spec.md](docs/multi-account-spec.md).
 
 ### PDF documents
 
@@ -207,7 +238,7 @@ To update: commit changes, run the release workflow with a new version, then cli
 
 The container's storage is in memory and is wiped on every restart. So the container uses **password login** (not `MATRIX_ACCESS_TOKEN`): each start logs in as a new Matrix device with fresh encryption keys, and `MATRIX_CLEANUP_OLD_DEVICES=true` deletes the bot's previous devices (only ones named `MATRIX_DEVICE_NAME`). The bot also ignores messages sent before it started, so it doesn't answer old history after a restart. Conversation memory resets on restart too.
 
-Current Element clients only share room keys with devices that their owner has cross-signed, so an unsigned new device can't read anything. To keep the bot readable across restarts, run `npm run cross-signing` once: it gives the bot account a cross-signing identity and saves the private keys to `.env` as `MATRIX_CROSS_SIGNING_KEY`. Store that as a container secret, and the bot signs each new device at startup (`/health` shows `"crossSigning": "signed"`). Running it replaces any identity the account had, so people may see a one-time "identity changed" notice for the bot. Don't log in to the bot account with Element afterwards and reset its identity there, or the key stops matching.
+Current Element clients only share room keys with devices that their owner has cross-signed, so an unsigned new device can't read anything. To keep the bot readable across restarts, run `npm run cross-signing` once: it gives the bot account a cross-signing identity and saves the private keys to `.env` as `MATRIX_CROSS_SIGNING_KEY`. Store that as a container secret, and the bot signs each new device at startup (`/health` shows `"crossSigning": "signed"`). With [several accounts](#several-accounts), run `npm run cross-signing -- <id>` for each other account; it writes `<ID>_MATRIX_CROSS_SIGNING_KEY`. Running it replaces any identity the account had, so people may see a one-time "identity changed" notice for the bot. Don't log in to the bot account with Element afterwards and reset its identity there, or the key stops matching.
 
 Consequences: after a restart the bot can't read encrypted messages sent before it came back. Some apps also keep encrypting with the room key they had before the restart and never share it with the new device, so the bot can't read new messages in existing rooms either (seen 2026-11-13). When a message can't be decrypted, the bot retries for about 30 s, because the key sometimes arrives late. If it never does, the bot posts one notice per room key saying so, with the fix: `/discardsession` in Element, or a new room. The notice is skipped when `MATRIX_COMMAND_PREFIX` is set. Tinfoil's [encrypted persistent volumes](https://docs.tinfoil.sh/containers/encrypted-volumes) (beta, needs your own keyserver) could keep state across restarts.
 
@@ -218,7 +249,7 @@ Consequences: after a restart the bot can't read encrypted messages sent before 
 ```
 src/
   index.js   bot entry point: auth, client, event handlers
-  config.js  env loading + validation
+  config.js  env loading + validation (one entry per Matrix account)
   auth.js    token resolution (env / cache / password login)
   melong.js  chat client with per-room memory (Tinfoil SDK)
   media.js   attachment download/decrypt + ffmpeg audio conversion
@@ -234,7 +265,7 @@ src/
   cross-signing.js  signs the bot's new devices (setup: npm run cross-signing)
 speech/      Tibetan TTS/STT sidecar (Python, ONNX Runtime)
   login.js   one-off: print an access token
-docs/        research notes (Tibetan speech model comparison)
+docs/        research notes (Tibetan speech model comparison, multi-account design)
 prompts/     topic guidance (digital security, legal, history, debate, nonviolent action, osint)
 c2pa-trust/  C2PA trust lists used by c2patool (refresh: npm run c2pa-trust)
 test/        offline tests: npm test (no network or keys)

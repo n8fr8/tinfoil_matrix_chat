@@ -122,12 +122,14 @@ export class ChatClient {
         detectThreshold = -0.45,
         webSearch = true,
         prompts = null, // PromptLibrary of topic guidance (optional)
+        defaultTopic = null, // a topic prompt ({name, body}) added to every request (optional)
         wikiSchema = "", // default SCHEMA.md, for rooms without a wiki yet
         wikiMaxBytes = 20 * 1024 * 1024,
         pdf = false, // offer the create_pdf tool (needs WeasyPrint)
         forensics = null, // installed media forensics tools ({c2patool, exiftool, proofmode}); offers inspect_media
     } = {}) {
         this.prompts = prompts;
+        this.defaultTopic = defaultTopic;
         this.wikiSchema = wikiSchema;
         this.wikiMaxBytes = wikiMaxBytes;
         this.pdf = pdf;
@@ -332,7 +334,8 @@ export class ChatClient {
         const inspect = Boolean(this.forensics && (attachments.length || earlier.length));
         const system =
             this.systemPrompt +
-            (topic ? `\n\nGuidance for this kind of request (${topic.name}):\n${topic.body}` : "") +
+            (this.defaultTopic ? `\n\nGuidance for every request (${this.defaultTopic.name}):\n${this.defaultTopic.body}` : "") +
+            (topic && topic !== this.defaultTopic ? `\n\nGuidance for this kind of request (${topic.name}):\n${topic.body}` : "") +
             (opts.wiki ? wikiInstructions(opts.wiki, this.wikiSchema) + (WIKI_TASKS[opts.wikiTask] || "") : "") +
             (this.pdf ? PDF_INSTRUCTIONS : "") +
             (inspect ? INSPECT_INSTRUCTIONS + earlierFilesNote(earlier) : "") +

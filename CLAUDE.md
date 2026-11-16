@@ -23,7 +23,7 @@ A Matrix chatbot ("Melong") that answers in Matrix rooms using private, attested
 
 ```
 src/index.js          entry: startup, Matrix client, message handling, replies, !memory commands
-src/config.js         env -> config (all settings and defaults)
+src/config.js         env -> config (all settings and defaults; one entry per Matrix account, MATRIX_ACCOUNTS)
 src/melong.js         ChatClient: system prompt, Tinfoil chat calls, tool loop, history, STT routing, TTS
 src/media.js          attachment download/decrypt, ffmpeg conversion, voice message encoding, uploads
 src/split.js          splits long replies into several text / voice messages
@@ -40,7 +40,7 @@ src/format.js         Markdown -> Matrix HTML
 speech/               Tibetan STT/TTS sidecar (Python, ONNX Runtime, CPU), its own container
 prompts/              topic prompts (digital-security, legal, history, debate, nonviolent-action, osint); README explains the format
 c2pa-trust/           C2PA trust lists (official + legacy interim), vendored so the attested image has a fixed trust store
-docs/                 research notes: tibetan-speech-models.md, multi-account-spec.md (on hold)
+docs/                 research notes: tibetan-speech-models.md, multi-account-spec.md
 test/                 offline tests (npm test)
 tinfoil-config.yml    the measured container config (public; no secret values)
 .github/workflows/    tinfoil-release.yml (build) -> tinfoil-release-publish.yml (attest, publish)
@@ -55,6 +55,8 @@ tinfoil-config.yml    the measured container config (public; no secret values)
 5. The reply is split (`split.js`) and sent as text messages in the main timeline, followed by any PDFs the model made with `create_pdf`. For voice input, or when asked, it is also sent as voice messages (`sendVoiceReplies`). The wiki is saved if it changed.
 
 ## Behaviors that look odd but are deliberate
+
+**Several accounts (`MATRIX_ACCOUNTS`):** `main()` does shared setup once (`sharedSetup`), then `runAccount`/`startAccount` per account, each with its own retry loop and `ChatClient`. Other accounts read `<ID>_<SETTING>` variables. Handling state (`pendingFiles`, `inflight`, room member cache) is keyed by the bot's user ID too, since two accounts in one room see the same events. In a room with two of our accounts, each answers only messages addressed to it (`inSharedRoom`, `addressedToMe`).
 
 **Client quirks** (the owner's Matrix client; verified from event order and relations, see Testing):
 - A voice note arrives as a short placeholder text ("Sent 1 media items.") plus the audio as a **thread reply** under it.
@@ -136,6 +138,6 @@ See TODO.md. In short:
 - Real-world testing of Tibetan voice and of room memory.
 - Licenses: the Ganga STT model has none stated, and MMS-TTS is CC-BY-NC.
 - Monlam Melong as a Tibetan reply model, if Tinfoil hosts it.
-- Multi-account support (spec in docs/, on hold).
+- Multi-account support: implemented, needs a live test with two accounts and a production rollout.
 - Room memory limits: old uploads pile up, the blue-green write window, and anyone can clear a room's memory.
 - Media forensics: real-world tests, OpenTimestamps without network access, refreshing the C2PA trust lists.

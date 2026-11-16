@@ -1,6 +1,15 @@
-# Multiple Matrix accounts in one instance (draft spec)
+# Multiple Matrix accounts in one instance
 
-Status: **on hold** (2026-11-11). Ideas for later; nothing here is implemented.
+Status: **implemented** (2026-11-16), not yet tested with two live accounts. User-facing docs: README, "Several accounts". Where the code differs from the draft below:
+
+- Variables use the account ID as a prefix on the whole name: `TUTOR_MATRIX_USERNAME`, `TUTOR_CHAT_SYSTEM_PROMPT`, `TUTOR_TINFOIL_MODEL`. One rule covers every setting, so any of them can be set per account. The first account in `MATRIX_ACCOUNTS` (not necessarily called `main`) uses the plain names. IDs that are the first word of existing settings (`matrix`, `chat`, `tinfoil`, ...) are refused.
+- Credentials, display name and storage paths never fall back to the first account.
+- Device names don't have to differ: devices belong to an account, so cleanup can't touch another account's. Instead, the same Matrix account listed twice is refused.
+- `/health` `ok` is true when at least one account syncs and none that started has stopped. Requiring every account would let one bad login make the container unhealthy, and the restarts would cost the working accounts their devices and room keys.
+- `CHAT_DEFAULT_TOPIC` guidance is added to every request, plus the classified topic when it is a different one.
+- With a single account, a revoked token still exits the process, as before.
+
+The draft follows.
 
 ## Goal
 

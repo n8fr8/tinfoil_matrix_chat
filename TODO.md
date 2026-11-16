@@ -17,9 +17,13 @@ Follow-ups for the Tibetan voice features. Background and test results are in [d
 
 - [ ] Consider Monlam Melong (`Monlam_Melong_preview`) for Tibetan replies. Its Tibetan reads more natural, but it's weaker as a chat assistant and too slow on CPU (about 1.6 tokens/s). Asking Tinfoil to host it is cheaper than running our own GPU instance.
 
-## Multiple accounts (on hold)
+## Multiple accounts
 
-- [ ] Run several Matrix accounts (personas) from one instance. Draft spec: [docs/multi-account-spec.md](docs/multi-account-spec.md).
+- [x] Run several Matrix accounts (personas, other homeservers) from one instance: `MATRIX_ACCOUNTS`, `<ID>_` variables. Spec: [docs/multi-account-spec.md](docs/multi-account-spec.md).
+- [ ] Live test with two real accounts: both reply in their own DMs, neither answers the other in a shared room, mentions route to the right one.
+- [ ] Production: add the second account (homeserver in the egress list, secrets in `tinfoil-config.yml` and Tinfoil), check `/health` shows both `signed` and syncing, then test from Element after a restart.
+- [ ] Revoking one account's token restarts only that account (in-process re-login is untested against a real homeserver).
+- [ ] `signOwnDevice` and the media/prompt modules still log as `melong`, not `melong:<id>`.
 
 ## Room memory (wikis)
 

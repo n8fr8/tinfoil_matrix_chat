@@ -8,6 +8,7 @@ import { canonicalJson, crossSigningUploadBody, generateCrossSigningKeys, parseC
 import { Wiki, WikiStore, cleanPath, runWikiTool } from "../src/wiki.js";
 import { loadPrompts, parsePromptFile } from "../src/prompts.js";
 import { forSpeech } from "../src/melong.js";
+import { loadConfig } from "../src/config.js";
 
 const squash = (s) => s.replace(/\s+/g, "");
 
@@ -274,4 +275,47 @@ test("sentInfo reports what the Matrix message declared, without URLs or keys", 
         thumbnail: { mimetype: "image/jpeg", size: 9000, dimensions: "320x240", used: false }, encrypted: true,
     });
     assert.doesNotMatch(JSON.stringify(s), /secret|mxc/);
+});
+
+const baseEnv = { TINFOIL_API_KEY: "k", MATRIX_HOMESERVER_URL: "https://hs.example", MATRIX_USERNAME: "melongbot", MATRIX_PASSWORD: "p", MATRIX_DISPLAY_NAME: "Zomkyi", CHAT_SYSTEM_PROMPT: "be kind" };
+
+test("config: without MATRIX_ACCOUNTS there is one account with today's settings and paths", () => {
+    const { accounts } = loadConfig(baseEnv);
+    assert.equal(accounts.length, 1);
+    const [a] = accounts;
+    assert.deepEqual([a.id, a.primary, a.username, a.displayName, a.storagePath, a.credentialsPath, a.logModule], ["main", true, "melongbot", "Zomkyi", "./data/bot.json", "./data/credentials.json", "melong"]);
+});
+
+test("config: other accounts use <ID>_ variables, fall back to shared settings but never to credentials", () => {
+    const env = {
+        ...baseEnv,
+        MATRIX_ACCOUNTS: "main, Tutor",
+        CHAT_MESSAGE_MAX_CHARS: "900",
+        TUTOR_MATRIX_HOMESERVER_URL: "https://other.example",
+        TUTOR_MATRIX_USERNAME: "tutor",
+        TUTOR_MATRIX_PASSWORD: "q",
+        TUTOR_CHAT_PROMPTS: "history, legal",
+        TUTOR_CHAT_DEFAULT_TOPIC: "history",
+        TUTOR_TINFOIL_MODEL: "other-model",
+    };
+    const [main, tutor] = loadConfig(env).accounts;
+    assert.equal(main.chat.model, "deepseek-v4-1-flash");
+    assert.deepEqual(main.chat.topics, []);
+    assert.deepEqual(
+        [tutor.id, tutor.homeserverUrl, tutor.username, tutor.displayName, tutor.chat.systemPrompt, tutor.messageMaxChars, tutor.chat.model],
+        ["tutor", "https://other.example", "tutor", "", "be kind", 900, "other-model"],
+    );
+    assert.deepEqual([tutor.chat.topics, tutor.chat.defaultTopic], [["history", "legal"], "history"]);
+    assert.deepEqual([tutor.storagePath, tutor.cryptoPath, tutor.credentialsPath], ["data/tutor/bot.json", "data/tutor/crypto", "data/tutor/credentials.json"]);
+    assert.equal(tutor.logModule, "melong:tutor");
+    // The password is never borrowed from the first account.
+    assert.throws(() => loadConfig({ ...env, TUTOR_MATRIX_PASSWORD: "" }), /TUTOR_MATRIX_PASSWORD/);
+});
+
+test("config: bad, reserved or duplicate account IDs and one account listed twice are rejected", () => {
+    assert.throws(() => loadConfig({ ...baseEnv, MATRIX_ACCOUNTS: "main,main" }), /twice/);
+    assert.throws(() => loadConfig({ ...baseEnv, MATRIX_ACCOUNTS: "main,chat" }), /can't be used/);
+    assert.throws(() => loadConfig({ ...baseEnv, MATRIX_ACCOUNTS: "main,my_bot" }), /letters and digits/);
+    const same = { ...baseEnv, MATRIX_ACCOUNTS: "main,two", TWO_MATRIX_USERNAME: "@MelongBot:hs.example", TWO_MATRIX_PASSWORD: "p" };
+    assert.throws(() => loadConfig(same), /same Matrix account/);
 });
