@@ -105,6 +105,14 @@ async function main() {
     process.on("SIGTERM", shutdown);
 }
 
+// Waiting tasks on the crypto engine's locks (sync, and one per room), when any are queued.
+function cryptoQueues(client) {
+    const queues = client?.crypto?.engine?.lock?.queues;
+    if (!queues) return {};
+    const busy = Object.entries(queues).filter(([, q]) => q?.length);
+    return busy.length ? { cryptoQueue: { locks: busy.length, waiting: busy.reduce((n, [, q]) => n + q.length, 0), sync: queues.sync?.length || 0 } } : {};
+}
+
 const isSyncing = (a) => a.started && a.lastSyncAt > 0 && Date.now() - a.lastSyncAt < 5 * 60 * 1000;
 
 // The /health body. Top-level fields describe the first account, as before
@@ -141,6 +149,7 @@ function healthStatus(shared, accounts, startedAt) {
                       ...(a.rooms !== undefined ? { rooms: a.rooms } : {}),
                       ...(a.startSeconds !== undefined ? { startSeconds: a.startSeconds } : {}),
                       ...(a.firstSyncSeconds !== undefined ? { firstSyncSeconds: a.firstSyncSeconds } : {}),
+                      ...cryptoQueues(a.client),
                       ...(a.crossSigning ? { crossSigning: a.crossSigning } : {}),
                       ...(a.error ? { error: a.error } : {}),
                   })),
@@ -260,6 +269,10 @@ async function startAccount(config, setup, state, { single, startedAt }) {
     let syncCalls = 0;
     client.doSync = async (...args) => {
         syncCalls++;
+        // Time spent handling the previous sync (crypto work, events) before asking for the next.
+        if (state.lastSyncAt && Date.now() - state.lastSyncAt > 20000) {
+            LogService.info(log, `Handling sync ${syncCalls - 1} took ${Math.round((Date.now() - state.lastSyncAt) / 1000)} s`);
+        }
         try {
             const res = await doSync(...args);
             if (!state.lastSyncAt && state.syncStartedAt) state.firstSyncSeconds = Math.round((Date.now() - state.syncStartedAt) / 1000);
@@ -346,7 +359,7 @@ async function startAccount(config, setup, state, { single, startedAt }) {
     // the error crashes the process. The engine exists once start() returns,
     // before the first sync is processed.
     if (client.crypto?.engine?.lock) client.crypto.engine.lock.maxPending = Infinity;
-    batchTrackedUsers(client.crypto?.engine);
+    skipSyncMemberTracking(client.crypto?.engine);
     state.syncStartedAt = Date.now();
     state.startSeconds = Math.round((state.syncStartedAt - starting) / 1000);
     state.started = true;
@@ -379,35 +392,14 @@ function parallelRoomChecks(client, state, concurrency = 8) {
     };
 }
 
-// The SDK tells the crypto engine about room members one membership event at a
-// time, each a separate turn on the lock that sync processing also needs. A
-// first sync with thousands of member events then holds up the next syncs for
-// minutes. Collect them for a second and pass them on together. Sending in an
-// encrypted room doesn't wait for this: it fetches the room's members itself.
-function batchTrackedUsers(engine, delayMs = 1000) {
-    if (!engine || typeof engine.addTrackedUsers !== "function") return;
-    const add = engine.addTrackedUsers.bind(engine);
-    let users = new Set();
-    let waiting = [];
-    let timer = null;
-    engine.addTrackedUsers = (userIds) =>
-        new Promise((resolve, reject) => {
-            for (const id of userIds) users.add(id);
-            waiting.push({ resolve, reject });
-            timer ??= setTimeout(async () => {
-                const batch = [...users];
-                const done = waiting;
-                users = new Set();
-                waiting = [];
-                timer = null;
-                try {
-                    await add(batch);
-                    done.forEach((w) => w.resolve());
-                } catch (err) {
-                    done.forEach((w) => w.reject(err));
-                }
-            }, delayMs);
-        });
+// The SDK tells the crypto engine about room members as membership events
+// arrive in syncs, and then looks for missing encryption sessions with all of
+// them. With thousands of members (an account in 1,000+ rooms) that work never
+// finished: it held the engine's sync lock and every later sync waited behind
+// it. It isn't needed: before sending in an encrypted room, the SDK fetches the
+// room's members, tracks them and gets their sessions itself (prepareEncrypt).
+function skipSyncMemberTracking(engine) {
+    if (engine && typeof engine.addTrackedUsers === "function") engine.addTrackedUsers = async () => {};
 }
 
 // Sync filter for every account. Without one, the first sync of a fresh
@@ -468,9 +460,12 @@ function stripNullKeyUploadFields(client, log = "melong") {
         }
         // Slow requests (not the sync long-poll), to see where an account in many rooms spends its time.
         const started = Date.now();
+        const entry = { method, endpoint, started };
+        inflightRequests.add(entry);
         try {
             return await doRequest(method, endpoint, qs, body, ...rest);
         } finally {
+            inflightRequests.delete(entry);
             const ms = Date.now() - started;
             if (ms > SLOW_REQUEST_MS && !endpoint.endsWith("/sync")) {
                 const users = body?.device_keys ? ` (${Object.keys(body.device_keys).length} users)` : body?.one_time_keys ? ` (${Object.keys(body.one_time_keys).length} users)` : "";
@@ -480,6 +475,21 @@ function stripNullKeyUploadFields(client, log = "melong") {
     };
 }
 const SLOW_REQUEST_MS = 10000;
+
+// Requests still waiting after 20 s, logged every 30 s: a request that hangs never reaches the "slow" log.
+const inflightRequests = new Set();
+setInterval(() => {
+    const now = Date.now();
+    // The sync long-poll waits up to 30 s by design; count it only after 45 s.
+    const stuck = [...inflightRequests].filter((r) => now - r.started > (r.endpoint.endsWith("/sync") ? 45000 : 20000));
+    if (!stuck.length) return;
+    const counts = {};
+    for (const r of stuck) {
+        const key = `${r.method} ${r.endpoint.replace(/![^/]+/, "!…").replace(/@[^/]+/, "@…")}`;
+        counts[key] = Math.max(counts[key] || 0, Math.round((now - r.started) / 1000));
+    }
+    LogService.info("melong", `Waiting requests: ${Object.entries(counts).map(([k, s]) => `${k} (${s} s)`).join(", ")}`);
+}, 30000).unref();
 
 // Some clients send a placeholder text like "Sent 1 media items." alongside
 // (or as the fallback body of) media. It is not a real message, so skip it.

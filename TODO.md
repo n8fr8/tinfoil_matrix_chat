@@ -21,7 +21,7 @@ Follow-ups for the Tibetan voice features. Background and test results are in [d
 
 - [x] Run several Matrix accounts (personas, other homeservers) from one instance: `MATRIX_ACCOUNTS`, `<ID>_` variables. Spec: [docs/multi-account-spec.md](docs/multi-account-spec.md).
 - [ ] Live test with two real accounts: both reply in their own DMs, neither answers the other in a shared room, mentions route to the right one.
-- [ ] Production: second account `@zomkyibot:nang.zom.im` ("zomkyi", prefix `!zomkyi`, 1,221 rooms: a scaling test). v0.3.23 never finished its first sync and was rolled back; v0.3.24 crashed on the first sync (SDK crypto queue overflow); v0.3.25 has the workarounds. Locally: started in 22 s, first sync 6 s, then normal syncs. check `/health` shows both `signed` and syncing, then test from Element after a restart.
+- [ ] Production: second account `@zomkyibot:nang.zom.im` ("zomkyi", prefix `!zomkyi`, 1,221 rooms: a scaling test). v0.3.23 never finished its first sync and was rolled back; v0.3.24 crashed on the first sync (SDK crypto queue overflow); v0.3.25 then deadlocked on the crypto sync lock locally; v0.3.26 has all the workarounds. Locally: started in 22 s, first sync 6 s, then normal syncs for minutes. Still to check: sending in an encrypted room from that account (member tracking now happens only at send time). check `/health` shows both `signed` and syncing, then test from Element after a restart.
 - [ ] Revoking one account's token restarts only that account (in-process re-login is untested against a real homeserver).
 - [ ] `signOwnDevice` and the media/prompt modules still log as `melong`, not `melong:<id>`.
 
