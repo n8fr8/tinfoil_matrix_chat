@@ -59,6 +59,12 @@ async function main() {
         }
         return hosts;
     };
+    // The SDK starts some work without awaiting it (crypto bookkeeping for
+    // sync events). A failure there would end the process and every account
+    // in it; log it instead.
+    process.on("unhandledRejection", (err) => {
+        LogService.error("melong", "Unhandled error (the bot keeps running):", err?.stack || err?.message || err);
+    });
     if (healthPort) startHealthServer(healthPort, () => healthStatus(shared, accounts, startedAt), diagHosts);
 
     // Retry startup with backoff. With a status endpoint the process stays up
@@ -131,6 +137,10 @@ function healthStatus(shared, accounts, startedAt) {
                       userId: a.userId,
                       started: a.started,
                       secondsSinceLastSync: age(a),
+                      // Startup timings, for accounts in many rooms.
+                      ...(a.rooms !== undefined ? { rooms: a.rooms } : {}),
+                      ...(a.startSeconds !== undefined ? { startSeconds: a.startSeconds } : {}),
+                      ...(a.firstSyncSeconds !== undefined ? { firstSyncSeconds: a.firstSyncSeconds } : {}),
                       ...(a.crossSigning ? { crossSigning: a.crossSigning } : {}),
                       ...(a.error ? { error: a.error } : {}),
                   })),
@@ -236,8 +246,14 @@ async function startAccount(config, setup, state, { single, startedAt }) {
 
     const client = new MatrixClient(config.homeserverUrl, creds.accessToken, storage, cryptoStore);
     state.client = client;
-    stripNullKeyUploadFields(client);
+    stripNullKeyUploadFields(client, log);
     useAuthenticatedMedia(client);
+    parallelRoomChecks(client, state);
+    // The SDK's DM tracking rewrites the account's whole m.direct list for every
+    // invite it sees, including each waiting invite in the first sync (1,389
+    // writes for an account with a backlog; the homeserver answered most with
+    // 500s). The bot doesn't use it, and the account's DM list isn't the bot's to change.
+    if (client.dms) client.dms.handleInvite = async () => {};
     // Record successful syncs for the status endpoint.
     const doSync = client.doSync.bind(client);
     let restarting = false;
@@ -246,6 +262,7 @@ async function startAccount(config, setup, state, { single, startedAt }) {
         syncCalls++;
         try {
             const res = await doSync(...args);
+            if (!state.lastSyncAt && state.syncStartedAt) state.firstSyncSeconds = Math.round((Date.now() - state.syncStartedAt) / 1000);
             state.lastSyncAt = Date.now();
             return res;
         } catch (err) {
@@ -320,7 +337,18 @@ async function startAccount(config, setup, state, { single, startedAt }) {
         });
     }
 
+    state.syncStartedAt = 0;
+    const starting = Date.now();
     await client.start(SYNC_FILTER);
+    // The SDK queues crypto work for each room member and newly seen room in a
+    // sync, on one lock that allows 1,000 waiting tasks. Nothing awaits that
+    // work, so in an account with 1,000+ rooms the first sync overflows it and
+    // the error crashes the process. The engine exists once start() returns,
+    // before the first sync is processed.
+    if (client.crypto?.engine?.lock) client.crypto.engine.lock.maxPending = Infinity;
+    batchTrackedUsers(client.crypto?.engine);
+    state.syncStartedAt = Date.now();
+    state.startSeconds = Math.round((state.syncStartedAt - starting) / 1000);
     state.started = true;
     if (crossSigningKeys) {
         state.crossSigning = await signOwnDevice(client, crossSigningKeys);
@@ -332,6 +360,54 @@ async function startAccount(config, setup, state, { single, startedAt }) {
         );
     }
     LogService.info(log, `Bot started as ${botUserId} (encryption ${config.encryption ? "on" : "off"})`);
+}
+
+// Before its first sync, the SDK checks every joined room's encryption
+// settings, one room at a time (up to two requests each). An account in 1,000+
+// rooms then needs minutes before it syncs, on every start, since the
+// container's crypto store is wiped. Run the checks several at a time instead.
+function parallelRoomChecks(client, state, concurrency = 8) {
+    const tracker = client.crypto?.roomTracker;
+    if (!tracker || typeof tracker.queueRoomCheck !== "function") return;
+    tracker.prepare = async (roomIds) => {
+        state.rooms = roomIds.length;
+        let next = 0;
+        const worker = async () => {
+            while (next < roomIds.length) await tracker.queueRoomCheck(roomIds[next++]);
+        };
+        await Promise.all(Array.from({ length: Math.min(concurrency, roomIds.length) }, worker));
+    };
+}
+
+// The SDK tells the crypto engine about room members one membership event at a
+// time, each a separate turn on the lock that sync processing also needs. A
+// first sync with thousands of member events then holds up the next syncs for
+// minutes. Collect them for a second and pass them on together. Sending in an
+// encrypted room doesn't wait for this: it fetches the room's members itself.
+function batchTrackedUsers(engine, delayMs = 1000) {
+    if (!engine || typeof engine.addTrackedUsers !== "function") return;
+    const add = engine.addTrackedUsers.bind(engine);
+    let users = new Set();
+    let waiting = [];
+    let timer = null;
+    engine.addTrackedUsers = (userIds) =>
+        new Promise((resolve, reject) => {
+            for (const id of userIds) users.add(id);
+            waiting.push({ resolve, reject });
+            timer ??= setTimeout(async () => {
+                const batch = [...users];
+                const done = waiting;
+                users = new Set();
+                waiting = [];
+                timer = null;
+                try {
+                    await add(batch);
+                    done.forEach((w) => w.resolve());
+                } catch (err) {
+                    done.forEach((w) => w.reject(err));
+                }
+            }, delayMs);
+        });
 }
 
 // Sync filter for every account. Without one, the first sync of a fresh
@@ -384,15 +460,26 @@ function setupAutojoin(client, log = "melong", { startedAt = 0, firstSync = () =
 // has one-time keys to upload. Spec-strict homeservers reject null here
 // (M_INVALID_PARAM "device_keys must not be null"), which fails every sync.
 // Drop null top-level fields from /keys/upload bodies before they are sent.
-function stripNullKeyUploadFields(client) {
+function stripNullKeyUploadFields(client, log = "melong") {
     const doRequest = client.doRequest.bind(client);
-    client.doRequest = (method, endpoint, qs, body, ...rest) => {
+    client.doRequest = async (method, endpoint, qs, body, ...rest) => {
         if (method === "POST" && endpoint.endsWith("/keys/upload") && body && typeof body === "object") {
             body = Object.fromEntries(Object.entries(body).filter(([, v]) => v !== null && v !== undefined));
         }
-        return doRequest(method, endpoint, qs, body, ...rest);
+        // Slow requests (not the sync long-poll), to see where an account in many rooms spends its time.
+        const started = Date.now();
+        try {
+            return await doRequest(method, endpoint, qs, body, ...rest);
+        } finally {
+            const ms = Date.now() - started;
+            if (ms > SLOW_REQUEST_MS && !endpoint.endsWith("/sync")) {
+                const users = body?.device_keys ? ` (${Object.keys(body.device_keys).length} users)` : body?.one_time_keys ? ` (${Object.keys(body.one_time_keys).length} users)` : "";
+                LogService.info(log, `Slow request: ${method} ${endpoint.replace(/![^/]+/, "!…")}${users} took ${Math.round(ms / 1000)} s`);
+            }
+        }
     };
 }
+const SLOW_REQUEST_MS = 10000;
 
 // Some clients send a placeholder text like "Sent 1 media items." alongside
 // (or as the fallback body of) media. It is not a real message, so skip it.
